@@ -2,6 +2,8 @@ package ticketing.domain.concert.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -13,6 +15,10 @@ import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import ticketing.domain.concert.exception.SeatExceptionCode;
+import ticketing.global.exception.CustomException;
+
+import java.util.Objects;
 
 @Entity
 @Getter
@@ -34,6 +40,7 @@ public class Seat {
     private int price;
 
     @Column(nullable = false)
+    @Enumerated(EnumType.STRING)
     private SeatStatus status;
 
     @Builder
@@ -42,5 +49,23 @@ public class Seat {
         this.seatNum = seatNum;
         this.price = price;
         this.status = SeatStatus.AVAILABLE;
+    }
+
+    public void validateAvailable(){
+        if(status != SeatStatus.AVAILABLE){
+            throw new CustomException(SeatExceptionCode.SEAT_NOT_AVAILABLE);
+        }
+    }
+
+    public void reserve(Long scheduleId){
+        validateAvailable();
+        validateSchedule(scheduleId);
+        status = SeatStatus.RESERVED;
+    }
+
+    public void validateSchedule(Long scheduleId) {
+        if (this.concertSchedule == null || !this.concertSchedule.getId().equals(scheduleId)) {
+            throw new CustomException(SeatExceptionCode.SEAT_NOT_FOUND);
+        }
     }
 }

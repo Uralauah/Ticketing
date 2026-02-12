@@ -10,8 +10,6 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
-import jakarta.persistence.OneToMany;
-import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Builder;
@@ -49,11 +47,18 @@ public class Reservation {
     private ReservationStatus status;
 
     @Builder
-    public Reservation(User user, Seat seat, int price){
+    public Reservation(User user, Seat seat){
         this.user = user;
         this.seat = seat;
-        this.price = price;
+        this.price = seat.getPrice();
         this.reservationTime = LocalDateTime.now();
         this.status = ReservationStatus.PAID;
+    }
+
+    public static Reservation of(User user, Seat seat){
+        return Reservation.builder()
+                .user(user)
+                .seat(seat)
+                .build();
     }
 }

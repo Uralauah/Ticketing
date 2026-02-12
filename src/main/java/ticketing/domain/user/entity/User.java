@@ -9,6 +9,8 @@ import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import ticketing.domain.user.exception.UserExceptionCode;
+import ticketing.global.exception.CustomException;
 
 @Entity
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
@@ -28,5 +30,12 @@ public class User {
     public User(String name, int point){
         this.name = name;
         this.point = point;
+    }
+
+    public void reserve(int price) {
+        if(point<price){
+            throw new CustomException(UserExceptionCode.USER_CANT_PAY);
+        }
+        point-=price;
     }
 }
