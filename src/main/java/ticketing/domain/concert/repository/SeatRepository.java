@@ -6,5 +6,4 @@ import ticketing.domain.concert.entity.Seat;
 import java.util.Optional;
 
 public interface SeatRepository extends JpaRepository<Seat, Long> {
-    Optional<Seat> findById(Long seatId);
 }

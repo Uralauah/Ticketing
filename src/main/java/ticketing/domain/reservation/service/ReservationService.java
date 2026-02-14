@@ -15,7 +15,6 @@ import ticketing.domain.user.service.UserService;
 @RequiredArgsConstructor
 public class ReservationService {
     private final UserService userService;
-    private final ConcertScheduleService scheduleService;
     private final SeatService seatService;
     private final ReservationRepository reservationRepository;
 
