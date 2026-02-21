@@ -33,9 +33,9 @@ public class User {
     }
 
     public void reserve(int price) {
-        if(point<price){
-            throw new CustomException(UserExceptionCode.USER_CANT_PAY);
-        }
-        point-=price;
+//        if(point<price){
+//            throw new CustomException(UserExceptionCode.USER_CANT_PAY);
+//        }
+//        point-=price;
     }
 }
