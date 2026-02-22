@@ -8,6 +8,7 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
@@ -18,12 +19,13 @@ import lombok.NoArgsConstructor;
 import ticketing.domain.concert.exception.SeatExceptionCode;
 import ticketing.global.exception.CustomException;
 
-import java.util.Objects;
-
 @Entity
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-@Table(name = "seat")
+@Table(name = "seat", indexes = {
+        @Index(name = "idx_seat_schedule", columnList = "concert_schedule_id"),
+        @Index(name = "idx_seat_schedule_seatnum", columnList = "concert_schedule_id, seat_num")
+})
 public class Seat {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -44,20 +46,20 @@ public class Seat {
     private SeatStatus status;
 
     @Builder
-    public Seat(ConcertSchedule concertSchedule, String seatNum, int price){
+    public Seat(ConcertSchedule concertSchedule, String seatNum, int price) {
         this.concertSchedule = concertSchedule;
         this.seatNum = seatNum;
         this.price = price;
         this.status = SeatStatus.AVAILABLE;
     }
 
-    public void validateAvailable(){
-        if(status != SeatStatus.AVAILABLE){
+    public void validateAvailable() {
+        if (status != SeatStatus.AVAILABLE) {
             throw new CustomException(SeatExceptionCode.SEAT_NOT_AVAILABLE);
         }
     }
 
-    public void reserve(Long scheduleId){
+    public void reserve(Long scheduleId) {
         validateAvailable();
         validateSchedule(scheduleId);
         status = SeatStatus.RESERVED;

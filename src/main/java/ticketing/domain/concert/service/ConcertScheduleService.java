@@ -17,17 +17,17 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class ConcertScheduleService {
-    private final ConcertScheduleRepository concertScheduleRepository;
-    private final SeatRepository seatRepository;
-
-    @Cacheable(cacheNames = "scheduleSeats", key = "#scheduleId")
-    @Transactional(readOnly = true)
-    public ConcertScheduleRes getSeats(long scheduleId) {
-        ConcertSchedule schedule = concertScheduleRepository.findById(scheduleId)
-                .orElseThrow(() -> new CustomException(ScheduleExceptionCode.SCHEDULE_NOT_FOUND));
-
-        List<SeatRes> seats = seatRepository.findAllByConcertScheduleId(scheduleId);
-
-        return ConcertScheduleRes.from(schedule, seats);
-    }
+//    private final ConcertScheduleRepository concertScheduleRepository;
+//    private final SeatRepository seatRepository;
+//
+//    @Cacheable(cacheNames = "scheduleSeats", key = "#scheduleId")
+//    @Transactional(readOnly = true)
+//    public ConcertScheduleRes getSeats(long scheduleId) {
+//        ConcertSchedule schedule = concertScheduleRepository.findById(scheduleId)
+//                .orElseThrow(() -> new CustomException(ScheduleExceptionCode.SCHEDULE_NOT_FOUND));
+//
+//        List<SeatRes> seats = seatRepository.findAllByConcertScheduleId(scheduleId);
+//
+//        return ConcertScheduleRes.from(schedule, seats);
+//    }
 }
