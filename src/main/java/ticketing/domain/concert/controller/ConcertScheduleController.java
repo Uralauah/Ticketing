@@ -7,10 +7,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import ticketing.domain.concert.dto.ConcertScheduleRes;
-import ticketing.domain.concert.dto.SeatRes;
 import ticketing.domain.concert.service.ConcertScheduleService;
-
-import java.util.List;
 
 @RestController
 @RequiredArgsConstructor
