@@ -23,8 +23,8 @@ import ticketing.global.exception.CustomException;
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @Table(name = "seat", indexes = {
-        @Index(name = "idx_seat_schedule", columnList = "concert_schedule_id"),
-        @Index(name = "idx_seat_schedule_seatnum", columnList = "concert_schedule_id, seat_num")
+        @Index(name = "idx_seat_schedule", columnList = "schedule_id"),
+        @Index(name = "idx_seat_schedule_seatnum", columnList = "schedule_id, seat_num")
 })
 public class Seat {
     @Id
