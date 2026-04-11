@@ -11,6 +11,7 @@ import java.time.Duration;
 
 @Configuration
 @EnableCaching
+@Profile("!test")
 public class RedisCacheConfig {
 
     @Bean
