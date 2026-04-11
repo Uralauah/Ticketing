@@ -16,4 +16,9 @@ public class SeatService {
         return seatRepository.findById(seatId)
                 .orElseThrow(()->new CustomException(SeatExceptionCode.SEAT_NOT_FOUND));
     }
+
+    public Seat findByIdForUpdate(Long seatId) {
+        return seatRepository.findByIdForUpdate(seatId)
+                .orElseThrow(() -> new CustomException(SeatExceptionCode.SEAT_NOT_FOUND));
+    }
 }

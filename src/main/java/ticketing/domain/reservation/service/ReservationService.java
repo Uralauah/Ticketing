@@ -26,7 +26,7 @@ public class ReservationService {
     public void reserve(Long userId, Long scheduleId, Long seatId){
         User user = userService.findById(userId);
 
-        Seat seat = seatService.findById(seatId);
+        Seat seat = seatService.findByIdForUpdate(seatId);
         seat.reserve(scheduleId);
         user.reserve(seat.getPrice());
 
