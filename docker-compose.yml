@@ -1,0 +1,84 @@
+services:
+
+  # ── MySQL ─────────────────────────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: ticketing
+      MYSQL_USER: ticket
+      MYSQL_PASSWORD: ticket1234
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "ticket", "-pticket1234"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Spring Boot App ───────────────────────────────────────────────────────
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ticketing?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=UTF-8
+      SPRING_DATASOURCE_USERNAME: ticket
+      SPRING_DATASOURCE_PASSWORD: ticket1234
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1.5g
+
+  # ── Locust (대기열 있음 — 기본) ────────────────────────────────────────────
+  locust:
+    image: locustio/locust
+    ports:
+      - "8089:8089"
+    environment:
+      LOCUST_HOST: http://app:8080
+    volumes:
+      - ./locust:/mnt/locust
+    command: -f /mnt/locust/with_queue.py --config /mnt/locust/locust.conf
+    depends_on:
+      - app
+
+  # ── Locust (대기열 없음 — 비교용) ─────────────────────────────────────────
+  locust-no-queue:
+    image: locustio/locust
+    ports:
+      - "8090:8089"
+    environment:
+      LOCUST_HOST: http://app:8080
+    volumes:
+      - ./locust:/mnt/locust
+    command: -f /mnt/locust/no_queue.py --config /mnt/locust/locust.conf
+    depends_on:
+      - app
+    profiles:
+      - no-queue
+
+volumes:
+  mysql_data:
