@@ -13,6 +13,7 @@ import ticketing.domain.concert.service.ConcertScheduleQueryService;
 import ticketing.domain.concert.service.SeatStatusCacheService;
 import ticketing.domain.concert.service.SeatStatusLiveService;
 import ticketing.domain.concert.service.SeatStatusStreamService;
+import ticketing.domain.queue.service.QueueService;
 
 import java.util.List;
 
@@ -35,9 +36,14 @@ public class ConcertScheduleController {
 //    }
     private final SeatStatusLiveService seatStatusLiveService;
     private final SeatStatusStreamService seatStatusStreamService;
+    private final QueueService queueService;
 
-    @GetMapping("/{scheduleId}/seat-status/snapshot")
-    public ResponseEntity<SeatStatusSnapshotRes> snapshot(@PathVariable long scheduleId) {
+    @GetMapping("/{scheduleId}/seat-status/snapshot/{userId}")
+    public ResponseEntity<SeatStatusSnapshotRes> snapshot(@PathVariable long scheduleId,
+                                                          @PathVariable long userId,
+                                                          @RequestHeader("X-Queue-Token") String token) {
+        queueService.validateActiveUser(scheduleId, userId, token);
+
         return ResponseEntity.ok(seatStatusLiveService.snapshot(scheduleId));
     }
 
