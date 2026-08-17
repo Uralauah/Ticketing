@@ -3,8 +3,8 @@ package ticketing.domain.concert.service;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-import ticketing.domain.concert.dto.SeatStatusChangeRes;
 import ticketing.domain.concert.dto.SeatStatusDeltaRes;
+import ticketing.domain.concert.service.SeatStatusSseBroker.EmitterContext;
 
 @Service
 @RequiredArgsConstructor
@@ -16,39 +16,21 @@ public class SeatStatusStreamService {
     public SseEmitter stream(long scheduleId, Long sinceParam, String lastEventIdHeader) {
         long since = resolveSince(sinceParam, lastEventIdHeader);
 
-        // 1) 연결 등록(이 순간부터 실시간 이벤트 수신 가능)
-        SseEmitter emitter = broker.subscribe(scheduleId);
+        // 1) 연결 등록. 이 순간부터 들어오는 실시간 이벤트는 컨텍스트 버퍼에 쌓인다(아직 전송하지 않는다).
+        EmitterContext ctx = broker.subscribe(scheduleId);
 
-        // 2) 놓친 이벤트 replay (중복 가능성은 있으나, version 기반이면 클라이언트에서 idempotent 처리 가능)
         try {
+            // 2) 놓친 이벤트 조회. Redis I/O이므로 emitter 락 밖에서 끝낸다.
             SeatStatusDeltaRes delta = liveService.delta(scheduleId, since);
 
-            if (delta.fullSyncRequired()) {
-                // 클라이언트에게 "스냅샷 다시 받아라" 신호
-                emitter.send(SseEmitter.event()
-                        .name("full-sync-required")
-                        .id(String.valueOf(delta.currentVersion()))
-                        .data(delta));
-            } else {
-                for (SeatStatusChangeRes c : delta.changes()) {
-                    emitter.send(SseEmitter.event()
-                            .name("seat-status")
-                            .id(String.valueOf(c.version()))
-                            .data(c));
-                }
-            }
-
-            // ready 이벤트(선택)
-            emitter.send(SseEmitter.event()
-                    .name("ready")
-                    .id(String.valueOf(delta.currentVersion()))
-                    .data("ok"));
-
+            // 3) replay 전송 → 버퍼 flush → LIVE 전환. 브로커가 하나의 임계 구역에서 처리하므로
+            //    replay 도중 도착한 이벤트가 유실되거나 순서가 뒤집히지 않는다.
+            broker.completeReplay(scheduleId, ctx, delta);
         } catch (Exception e) {
-            emitter.completeWithError(e);
+            broker.abort(scheduleId, ctx, e);
         }
 
-        return emitter;
+        return ctx.emitter();
     }
 
     private long resolveSince(Long sinceParam, String lastEventIdHeader) {
