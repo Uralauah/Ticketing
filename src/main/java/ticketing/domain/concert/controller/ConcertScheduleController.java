@@ -47,6 +47,12 @@ public class ConcertScheduleController {
         return ResponseEntity.ok(seatStatusLiveService.snapshot(scheduleId));
     }
 
+    @GetMapping("/{scheduleId}/seat-status/snapshot/no-queue/{userId}")
+    public ResponseEntity<SeatStatusSnapshotRes> noQueueSnapshot(@PathVariable long scheduleId,
+                                                          @PathVariable long userId) {
+        return ResponseEntity.ok(seatStatusLiveService.snapshot(scheduleId));
+    }
+
     @GetMapping("/{scheduleId}/seat-status/delta")
     public ResponseEntity<SeatStatusDeltaRes> delta(@PathVariable long scheduleId,
                                                     @RequestParam long since) {

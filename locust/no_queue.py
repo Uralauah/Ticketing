@@ -1,20 +1,23 @@
 """
 대기열 없는 시나리오 (Before)
 ────────────────────────────────────────────────────────
-모든 유저가 대기열 활성화 여부와 무관하게 즉시 좌석 조회를 시도한다.
+모든 유저가 대기열 없이 즉시 좌석 조회 시도
 '대기열이 없었다면' 서버가 어떤 상태였을지 재현하는 시나리오다.
 
-기대 결과
-  - 1000명(MAX_ACTIVE_USERS) 초과 유저는 즉시 400/401 오류
-  - 서버는 유저 수만큼 좌석 조회 요청을 동시에 처리해야 함
-  - 응답 시간 증가, 오류율 급등
+서버 측 준비:
+  큐 검증 없이 좌석을 조회할 수 있는 엔드포인트가 필요하다.
+  - /api/v1/concerts/{scheduleId}/seats  (큐 미적용)
+  또는 기존 엔드포인트에서 큐 검증을 비활성화하는 프로필을 사용한다.
+
+기대 결과:
+  - 2000명이 동시에 좌석 조회 → 서버 부하 급등
+  - 응답 시간 증가, 타임아웃·오류율 급등
 
 실행:
   locust -f no_queue.py --users 2000 --spawn-rate 100 --run-time 2m
 """
 
 import random
-import uuid
 
 from locust import HttpUser, between, events, task
 
@@ -23,46 +26,23 @@ SCHEDULE_ID = 1
 
 class NoQueueUser(HttpUser):
     host = "http://localhost:8080"
-    wait_time = between(0.05, 0.2)  # 짧은 대기 → 급격한 부하
+    wait_time = between(0.5, 1.5)  # with_queue와 동일한 대기 시간
 
     def on_start(self):
-        self.user_id = random.randint(1, 10_000_000)
-        self.token = None
-        self._enter_queue()
-
-    def _enter_queue(self):
-        with self.client.post(
-            f"/api/v1/queue/{SCHEDULE_ID}/entry",
-            params={"userId": self.user_id},
-            name="[Queue] entry",
-            catch_response=True,
-        ) as resp:
-            if resp.status_code == 200:
-                self.token = resp.json().get("token", str(uuid.uuid4()))
-                resp.success()
-            elif resp.status_code == 409:
-                resp.success()  # 이미 등록 — 정상
-            else:
-                self.token = str(uuid.uuid4())  # 실패 시 유효하지 않은 토큰 사용
-                resp.failure(f"entry failed: {resp.status_code}")
+        self.user_id = random.randint(1, 100_000)  # DB에 존재하는 유저 범위
 
     @task
     def rush_seat_access(self):
-        """활성화 대기 없이 즉시 좌석 조회 — 대기열 미준수 행위 재현"""
-        if not self.token:
-            return
-
+        """큐 검증 없이 좌석 조회 엔드포인트 직접 호출"""
         with self.client.get(
-            f"/api/v1/concerts/{SCHEDULE_ID}/seat-status/snapshot/{self.user_id}",
-            headers={"X-Queue-Token": self.token},
-            name="[Seat] snapshot (no-queue)",
+            f"/api/v1/schedule/{SCHEDULE_ID}/seat-status/snapshot/no-queue/{self.user_id}",
+            name="[Seat] direct (no-queue)",
             catch_response=True,
         ) as resp:
             if resp.status_code == 200:
                 resp.success()
-            elif resp.status_code in (400, 401):
-                # 대기열 미통과: 큐가 없었다면 발생하지 않았을 오류
-                resp.failure(f"queue-rejected: {resp.status_code}")
+            elif resp.status_code == 503:
+                resp.failure("server overloaded")
             else:
                 resp.failure(f"HTTP {resp.status_code}")
 
@@ -72,18 +52,24 @@ class NoQueueUser(HttpUser):
 @events.quitting.add_listener
 def print_summary(environment, **kwargs):
     stats = environment.stats
-    snapshot = stats.get("/api/v1/concerts/1/seat-status/snapshot", "GET")  # type: ignore
+    snapshot = stats.get("[Seat] direct (no-queue)", "GET")
+
+    print("\n" + "=" * 55)
+    print("  [No Queue] 좌석 조회 결과 요약")
+    print("=" * 55)
 
     if snapshot:
-        success = snapshot.num_requests - snapshot.num_failures
-        total   = snapshot.num_requests
-        print("\n" + "=" * 55)
-        print("  [No Queue] 좌석 조회 결과 요약")
-        print("=" * 55)
+        total = snapshot.num_requests
+        success = total - snapshot.num_failures
+
         print(f"  총 요청수       : {total:,}")
-        print(f"  성공            : {success:,}  ({success/total*100:.1f}%)" if total else "  -")
-        print(f"  실패(큐 미통과) : {snapshot.num_failures:,}")
+        if total:
+            print(f"  성공            : {success:,}  ({success / total * 100:.1f}%)")
+        print(f"  실패            : {snapshot.num_failures:,}")
         print(f"  평균 응답 (ms)  : {snapshot.avg_response_time:.0f}")
         print(f"  p95  응답 (ms)  : {snapshot.get_response_time_percentile(0.95):.0f}")
         print(f"  p99  응답 (ms)  : {snapshot.get_response_time_percentile(0.99):.0f}")
-        print("=" * 55 + "\n")
+    else:
+        print("  (좌석 조회 요청 없음)")
+
+    print("=" * 55 + "\n")
