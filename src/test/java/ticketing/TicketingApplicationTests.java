@@ -1,10 +1,9 @@
 package ticketing;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
+import ticketing.support.IntegrationTestSupport;
 
-@SpringBootTest
-class TicketingApplicationTests {
+class TicketingApplicationTests extends IntegrationTestSupport {
 
     @Test
     void contextLoads() {
