@@ -2,7 +2,7 @@
 --  Ticketing 부하 테스트용 더미 데이터
 -- ============================================================
 --  대상 DB  : ticketing
---  전제 조건 : Spring Boot 기동 후 JPA ddl-auto=update 로 스키마 생성 완료
+--  전제 조건 : Spring Boot 기동 시 Flyway(db/migration)가 스키마 생성 완료
 --  Locust   : SCHEDULE_ID = 1 (no_queue.py / with_queue.py 공통)
 --
 --  데이터 규모

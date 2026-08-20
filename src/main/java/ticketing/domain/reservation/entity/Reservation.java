@@ -15,11 +15,18 @@ import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import ticketing.domain.concert.entity.Seat;
 import ticketing.domain.user.entity.User;
 
 import java.time.LocalDateTime;
 
+/**
+ * 더블 부킹 방지
+ * 1) 좌석 행 비관적 락 후 상태 확인
+ * 2) 활성 예약(PENDING, PAID)에만 걸리는 UNIQUE 제약 (최종 방어선)
+ */
 @Entity
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @Getter
@@ -43,7 +50,9 @@ public class Reservation {
     @Column(nullable = false)
     private int price;
 
+    @Column(nullable = false, length = 20)
     @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
     private ReservationStatus status;
 
     @Builder

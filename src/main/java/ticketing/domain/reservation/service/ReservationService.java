@@ -1,19 +1,24 @@
 package ticketing.domain.reservation.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import ticketing.domain.concert.entity.Seat;
 import ticketing.domain.concert.entity.SeatStatus;
+import ticketing.domain.concert.exception.SeatExceptionCode;
 import ticketing.domain.concert.service.SeatService;
 import ticketing.domain.concert.service.SeatStatusLiveService;
 import ticketing.domain.reservation.entity.Reservation;
 import ticketing.domain.reservation.repository.ReservationRepository;
 import ticketing.domain.user.entity.User;
 import ticketing.domain.user.service.UserService;
+import ticketing.global.exception.CustomException;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ReservationService {
@@ -30,8 +35,14 @@ public class ReservationService {
         seat.reserve(scheduleId);
         user.reserve(seat.getPrice());
 
-        Reservation reservation = Reservation.of(user, seat);
-        reservationRepository.save(reservation);
+        try {
+            // 제약 위반을 커밋 전에 감지
+            reservationRepository.saveAndFlush(Reservation.of(user, seat));
+        } catch (DataIntegrityViolationException e) {
+            // 락을 거쳤는데도 위반이면 락 없는 쓰기 경로가 있다는 뜻
+            log.warn("활성 예약 UNIQUE 제약 위반: scheduleId={}, seatId={}", scheduleId, seatId);
+            throw new CustomException(SeatExceptionCode.SEAT_NOT_AVAILABLE);
+        }
 
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
