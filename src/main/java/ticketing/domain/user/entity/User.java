@@ -9,8 +9,6 @@ import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-import ticketing.domain.user.exception.UserExceptionCode;
-import ticketing.global.exception.CustomException;
 
 @Entity
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
@@ -24,18 +22,12 @@ public class User {
     @Column(nullable = false)
     private String name;
 
+    /** 차감은 UserRepository.deductPoint의 조건부 UPDATE로만 처리 */
     @Column(nullable = false)
     private int point;
 
     public User(String name, int point){
         this.name = name;
         this.point = point;
-    }
-
-    public void reserve(int price) {
-//        if(point<price){
-//            throw new CustomException(UserExceptionCode.USER_CANT_PAY);
-//        }
-//        point-=price;
     }
 }

@@ -29,11 +29,11 @@ public class ReservationService {
 
     @Transactional
     public void reserve(Long userId, Long scheduleId, Long seatId){
-        User user = userService.findById(userId);
-
+        // 락 순서 좌석 → 사용자 고정 (교착 상태 방지)
         Seat seat = seatService.findByIdForUpdate(seatId);
         seat.reserve(scheduleId);
-        user.reserve(seat.getPrice());
+        userService.deductPoint(userId, seat.getPrice());
+        User user = userService.getReference(userId);
 
         try {
             // 제약 위반을 커밋 전에 감지
