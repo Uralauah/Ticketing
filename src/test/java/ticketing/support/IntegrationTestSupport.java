@@ -22,16 +22,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 public abstract class IntegrationTestSupport {
 
     @ServiceConnection
-    static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0");
+    static final MySQLContainer<?> MYSQL = TestContainers.mysql();
 
     @ServiceConnection(name = "redis")
-    static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
-
-    static {
-        // JVM 단위로 한 번만 띄움 (클래스마다 띄우면 캐시된 컨텍스트가 옛 포트를 바라봄)
-        MYSQL.start();
-        REDIS.start();
-    }
+    static final GenericContainer<?> REDIS = TestContainers.redis();
 
     @Autowired
     protected JdbcTemplate jdbcTemplate;

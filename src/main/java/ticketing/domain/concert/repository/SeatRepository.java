@@ -25,7 +25,6 @@ public interface SeatRepository extends JpaRepository<Seat, Long> {
                 select new ticketing.domain.concert.dto.SeatStatusRes(s.id, s.status)
                 from Seat s
                 where s.concertSchedule.id = :scheduleId
-                order by s.id
             """)
     List<SeatStatusRes> findSeatStatusByScheduleId(@Param("scheduleId") long scheduleId);
 

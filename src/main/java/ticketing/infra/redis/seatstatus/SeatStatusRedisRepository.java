@@ -13,9 +13,14 @@ import java.util.*;
 @RequiredArgsConstructor
 public class SeatStatusRedisRepository {
 
+    // 스크립트 1회당 적재 좌석 수 (Redis 장시간 점유 방지)
+    private static final int INIT_CHUNK_SIZE = 1_000;
+
     private final StringRedisTemplate redis;
 
     private static final DefaultRedisScript<Long> RECORD_AND_PUBLISH_SCRIPT;
+    private static final DefaultRedisScript<Long> INIT_STATUSES_IF_ABSENT_SCRIPT;
+    private static final DefaultRedisScript<Long> RELEASE_LOCK_SCRIPT;
 
     static {
         RECORD_AND_PUBLISH_SCRIPT = new DefaultRedisScript<>();
@@ -28,21 +33,44 @@ public class SeatStatusRedisRepository {
             -- ARGV[2] status
             -- ARGV[3] window
             -- ARGV[4] channel
-            
+
             local v = redis.call('INCR', KEYS[1])
             redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
-            
+
             local member = tostring(v) .. '|' .. ARGV[1] .. '|' .. ARGV[2]
             redis.call('ZADD', KEYS[3], v, member)
-            
+
             local window = tonumber(ARGV[3])
             local min_keep = v - window
             if min_keep >= 0 then
               redis.call('ZREMRANGEBYSCORE', KEYS[3], 0, min_keep)
             end
-            
+
             redis.call('PUBLISH', ARGV[4], member)
             return v
+        """);
+
+        // HSETNX → 초기화 중 기록된 최신 변경을 덮어쓰지 않음
+        INIT_STATUSES_IF_ABSENT_SCRIPT = new DefaultRedisScript<>();
+        INIT_STATUSES_IF_ABSENT_SCRIPT.setResultType(Long.class);
+        INIT_STATUSES_IF_ABSENT_SCRIPT.setScriptText("""
+            -- KEYS[1] hashKey
+            -- ARGV    seatId1, status1, seatId2, status2, ...
+            local added = 0
+            for i = 1, #ARGV, 2 do
+              added = added + redis.call('HSETNX', KEYS[1], ARGV[i], ARGV[i + 1])
+            end
+            return added
+        """);
+
+        // 내가 잡은 락일 때만 삭제
+        RELEASE_LOCK_SCRIPT = new DefaultRedisScript<>();
+        RELEASE_LOCK_SCRIPT.setResultType(Long.class);
+        RELEASE_LOCK_SCRIPT.setScriptText("""
+            if redis.call('GET', KEYS[1]) == ARGV[1] then
+              return redis.call('DEL', KEYS[1])
+            end
+            return 0
         """);
     }
 
@@ -51,9 +79,21 @@ public class SeatStatusRedisRepository {
         return Boolean.TRUE.equals(ok);
     }
 
-    public boolean tryInitLock(long scheduleId, Duration ttl) {
-        Boolean ok = redis.opsForValue().setIfAbsent(SeatStatusRedisKeys.initLock(scheduleId), "1", ttl);
+    public boolean tryInitLock(long scheduleId, String owner, Duration ttl) {
+        Boolean ok = redis.opsForValue().setIfAbsent(
+                SeatStatusRedisKeys.initLock(scheduleId),
+                owner,
+                ttl
+        );
         return Boolean.TRUE.equals(ok);
+    }
+
+    public void releaseInitLock(long scheduleId, String owner) {
+        redis.execute(
+                RELEASE_LOCK_SCRIPT,
+                List.of(SeatStatusRedisKeys.initLock(scheduleId)),
+                owner
+        );
     }
 
     public void markInitDone(long scheduleId) {
@@ -69,9 +109,23 @@ public class SeatStatusRedisRepository {
         return v == null ? 0L : Long.parseLong(v);
     }
 
-    public void putAllStatuses(long scheduleId, Map<String, String> seatIdToStatus) {
+    /** 비어 있는 좌석 필드만 채움 */
+    public void initStatusesIfAbsent(long scheduleId, Map<String, String> seatIdToStatus) {
         if (seatIdToStatus == null || seatIdToStatus.isEmpty()) return;
-        redis.opsForHash().putAll(SeatStatusRedisKeys.hash(scheduleId), seatIdToStatus);
+
+        List<String> hashKey = List.of(SeatStatusRedisKeys.hash(scheduleId));
+        List<String> args = new ArrayList<>(INIT_CHUNK_SIZE * 2);
+        for (Map.Entry<String, String> entry : seatIdToStatus.entrySet()) {
+            args.add(entry.getKey());
+            args.add(entry.getValue());
+            if (args.size() == INIT_CHUNK_SIZE * 2) {
+                redis.execute(INIT_STATUSES_IF_ABSENT_SCRIPT, hashKey, args.toArray());
+                args.clear();
+            }
+        }
+        if (!args.isEmpty()) {
+            redis.execute(INIT_STATUSES_IF_ABSENT_SCRIPT, hashKey, args.toArray());
+        }
     }
 
     public Map<Object, Object> getAllStatuses(long scheduleId) {
