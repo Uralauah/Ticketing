@@ -104,6 +104,18 @@ public class SeatStatusRedisRepository {
         redis.opsForValue().setIfAbsent(SeatStatusRedisKeys.ver(scheduleId), "0");
     }
 
+    /** 초기화 여부와 version을 MGET 1회로 조회, 초기화 전이면 null */
+    public Long versionIfInitialized(long scheduleId) {
+        List<String> values = redis.opsForValue().multiGet(List.of(
+                SeatStatusRedisKeys.initDone(scheduleId),
+                SeatStatusRedisKeys.ver(scheduleId)
+        ));
+        if (values == null || values.get(0) == null) {
+            return null;
+        }
+        return values.get(1) == null ? 0L : Long.parseLong(values.get(1));
+    }
+
     public long currentVersion(long scheduleId) {
         String v = redis.opsForValue().get(SeatStatusRedisKeys.ver(scheduleId));
         return v == null ? 0L : Long.parseLong(v);

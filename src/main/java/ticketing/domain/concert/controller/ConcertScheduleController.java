@@ -1,15 +1,18 @@
 package ticketing.domain.concert.controller;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import ticketing.domain.concert.dto.SeatMapRes;
 import ticketing.domain.concert.dto.SeatStatusDeltaRes;
 import ticketing.domain.concert.dto.SeatStatusRes;
 import ticketing.domain.concert.dto.SeatStatusSnapshotRes;
 import ticketing.domain.concert.service.ConcertScheduleQueryService;
+import ticketing.domain.concert.service.SeatSnapshotCache;
 import ticketing.domain.concert.service.SeatStatusCacheService;
 import ticketing.domain.concert.service.SeatStatusLiveService;
 import ticketing.domain.concert.service.SeatStatusStreamService;
@@ -36,21 +39,27 @@ public class ConcertScheduleController {
 //    }
     private final SeatStatusLiveService seatStatusLiveService;
     private final SeatStatusStreamService seatStatusStreamService;
+    private final SeatSnapshotCache seatSnapshotCache;
     private final QueueService queueService;
 
+    /** 응답 형식: {@link SeatStatusSnapshotRes} */
     @GetMapping("/{scheduleId}/seat-status/snapshot/{userId}")
-    public ResponseEntity<SeatStatusSnapshotRes> snapshot(@PathVariable long scheduleId,
-                                                          @PathVariable long userId,
-                                                          @RequestHeader("X-Queue-Token") String token) {
+    public ResponseEntity<byte[]> snapshot(@PathVariable long scheduleId,
+                                           @PathVariable long userId,
+                                           @RequestHeader("X-Queue-Token") String token,
+                                           @RequestHeader(value = HttpHeaders.ACCEPT_ENCODING, required = false) String acceptEncoding,
+                                           WebRequest request) {
         queueService.validateActiveUser(scheduleId, userId, token);
 
-        return ResponseEntity.ok(seatStatusLiveService.snapshot(scheduleId));
+        return SeatSnapshotResponses.of(seatSnapshotCache.get(scheduleId), acceptEncoding, request);
     }
 
     @GetMapping("/{scheduleId}/seat-status/snapshot/no-queue/{userId}")
-    public ResponseEntity<SeatStatusSnapshotRes> noQueueSnapshot(@PathVariable long scheduleId,
-                                                          @PathVariable long userId) {
-        return ResponseEntity.ok(seatStatusLiveService.snapshot(scheduleId));
+    public ResponseEntity<byte[]> noQueueSnapshot(@PathVariable long scheduleId,
+                                                  @PathVariable long userId,
+                                                  @RequestHeader(value = HttpHeaders.ACCEPT_ENCODING, required = false) String acceptEncoding,
+                                                  WebRequest request) {
+        return SeatSnapshotResponses.of(seatSnapshotCache.get(scheduleId), acceptEncoding, request);
     }
 
     @GetMapping("/{scheduleId}/seat-status/delta")

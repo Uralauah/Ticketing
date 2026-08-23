@@ -30,7 +30,7 @@ public abstract class RedisTestSupport {
     }
 
     @BeforeEach
-    void flushRedis() {
+    protected void flushRedis() {
         redisTemplate.execute((RedisCallback<Void>) connection -> {
             connection.serverCommands().flushAll();
             return null;
