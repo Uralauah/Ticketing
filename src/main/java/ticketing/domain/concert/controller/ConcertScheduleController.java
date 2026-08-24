@@ -1,5 +1,6 @@
 package ticketing.domain.concert.controller;
 
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -68,10 +69,14 @@ public class ConcertScheduleController {
         return ResponseEntity.ok(seatStatusLiveService.delta(scheduleId, since));
     }
 
+    /** since(스냅샷 version)도 Last-Event-ID도 없으면 replay 없이 full-sync-required 전송 */
     @GetMapping(value = "/{scheduleId}/seat-status/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@PathVariable long scheduleId,
                              @RequestParam(required = false) Long since,
-                             @RequestHeader(value = "Last-Event-ID", required = false) String lastEventId) {
+                             @RequestHeader(value = "Last-Event-ID", required = false) String lastEventId,
+                             HttpServletResponse response) {
+        // 프록시(nginx) 버퍼링 방지
+        response.setHeader("X-Accel-Buffering", "no");
         return seatStatusStreamService.stream(scheduleId, since, lastEventId);
     }
 }

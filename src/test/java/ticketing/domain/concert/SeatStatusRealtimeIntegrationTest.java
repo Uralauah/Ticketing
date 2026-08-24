@@ -88,6 +88,23 @@ class SeatStatusRealtimeIntegrationTest extends IntegrationTestSupport {
         }
     }
 
+    @Test
+    @DisplayName("기준 version 없이 연결: 0부터 replay 대신 full-sync 요구")
+    void since_없이_연결시_full_sync_요구() {
+        reservationService.reserve(userId, scheduleId, seatIds.get(0));
+
+        try (SseTestClient client = SseTestClient.connect(URI.create(
+                "http://localhost:" + port + "/api/v1/schedule/" + scheduleId + "/seat-status/stream"))) {
+            assertThat(client.header("X-Accel-Buffering")).isEqualTo("no");
+
+            SseTestClient.Event first = client.awaitEvent(e -> !e.isComment(), TIMEOUT);
+            assertThat(first.name()).isEqualTo("full-sync-required");
+            assertThat(first.id()).isEqualTo("1");
+            assertThat(client.awaitEvent("ready", TIMEOUT).id()).isEqualTo("1");
+            assertThat(client.received()).noneMatch(e -> "seat-status".equals(e.name()));
+        }
+    }
+
     private URI streamUri() {
         return URI.create("http://localhost:" + port + "/api/v1/schedule/" + scheduleId + "/seat-status/stream?since=0");
     }

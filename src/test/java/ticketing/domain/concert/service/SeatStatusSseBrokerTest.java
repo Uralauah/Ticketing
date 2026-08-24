@@ -1,5 +1,8 @@
 package ticketing.domain.concert.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
@@ -7,34 +10,48 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import ticketing.domain.concert.dto.SeatStatusChangeRes;
 import ticketing.domain.concert.dto.SeatStatusDeltaRes;
 import ticketing.domain.concert.entity.SeatStatus;
+import ticketing.domain.concert.exception.SeatExceptionCode;
 import ticketing.domain.concert.service.SeatStatusSseBroker.EmitterContext;
+import ticketing.global.exception.CustomException;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SeatStatusSseBrokerTest {
 
     private static final long SCHEDULE_ID = 1L;
 
-    private final List<RecordingEmitter> createdEmitters = new ArrayList<>();
+    private final List<RecordingEmitter> createdEmitters =
+            Collections.synchronizedList(new ArrayList<>());
+    private final List<ExecutorService> executors = new ArrayList<>();
 
-    private final SeatStatusSseBroker broker = new SeatStatusSseBroker() {
-        @Override
-        SseEmitter newEmitter() {
-            RecordingEmitter emitter = new RecordingEmitter();
-            createdEmitters.add(emitter);
-            return emitter;
-        }
-    };
+    /** 호출 스레드에서 바로 전송 (순서 검증을 결정적으로) */
+    private final SeatStatusSseBroker broker = brokerWith(
+            new ObjectMapper(),
+            Runnable::run,
+            100,
+            1_000
+    );
+
+    @AfterEach
+    void tearDown() {
+        createdEmitters.forEach(RecordingEmitter::unblock);
+        executors.forEach(ExecutorService::shutdownNow);
+    }
 
     @Test
     @DisplayName("replay 중 도착한 이벤트는 버퍼링됐다가 replay 뒤에 version 순서대로 전송된다")
@@ -81,6 +98,7 @@ class SeatStatusSseBrokerTest {
 
         assertThat(emitter.events()).extracting(SentEvent::name).containsExactly("seat-status");
         assertThat(emitter.eventIds()).containsExactly("3");
+        assertThat(emitter.events().get(0).data()).isEqualTo("{\"version\":3,\"seatId\":3,\"status\":\"AVAILABLE\"}");
     }
 
     @Test
@@ -111,6 +129,7 @@ class SeatStatusSseBrokerTest {
         broker.broadcast(SCHEDULE_ID, change(2));
 
         assertThat(emitter.events()).isEmpty();
+        assertThat(broker.connectionCount()).isZero();
     }
 
     @Test
@@ -164,10 +183,160 @@ class SeatStatusSseBrokerTest {
         }
     }
 
+    @Test
+    @DisplayName("느린 클라이언트가 있어도 broadcast 즉시 반환, 다른 연결은 제때 수신")
+    void 느린_클라이언트_격리() {
+        SeatStatusSseBroker asyncBroker = brokerWith(new ObjectMapper(), newPool(4), 100, 1_000);
+        EmitterContext slow = asyncBroker.subscribe(SCHEDULE_ID);
+        EmitterContext fast = asyncBroker.subscribe(SCHEDULE_ID);
+        asyncBroker.completeReplay(SCHEDULE_ID, slow, new SeatStatusDeltaRes(0, false, List.of()));
+        asyncBroker.completeReplay(SCHEDULE_ID, fast, new SeatStatusDeltaRes(0, false, List.of()));
+        RecordingEmitter slowEmitter = createdEmitters.get(0);
+        RecordingEmitter fastEmitter = createdEmitters.get(1);
+        slowEmitter.blockSends();
+
+        long startedAt = System.nanoTime();
+        for (long version = 1; version <= 3; version++) {
+            asyncBroker.broadcast(SCHEDULE_ID, change(version));
+        }
+        long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
+
+        assertThat(elapsedMs).isLessThan(500);
+        awaitTrue(() -> fastEmitter.eventIds().containsAll(List.of("1", "2", "3")));
+        assertThat(slowEmitter.eventIds()).doesNotContain("1", "2", "3");
+
+        slowEmitter.unblock();
+        awaitTrue(() -> slowEmitter.eventIds().containsAll(List.of("1", "2", "3")));
+        assertThat(slowEmitter.eventIds()).containsSubsequence("1", "2", "3");
+    }
+
+    @Test
+    @DisplayName("송신 큐 초과: 연결을 끊어 재연결(Last-Event-ID)로 복구하도록 함")
+    void 송신_큐_초과시_연결_종료() {
+        SeatStatusSseBroker asyncBroker = brokerWith(new ObjectMapper(), newPool(2), 100, 3);
+        EmitterContext ctx = asyncBroker.subscribe(SCHEDULE_ID);
+        asyncBroker.completeReplay(SCHEDULE_ID, ctx, new SeatStatusDeltaRes(0, false, List.of()));
+        RecordingEmitter emitter = createdEmitters.get(0);
+        emitter.blockSends();
+
+        asyncBroker.broadcast(SCHEDULE_ID, change(1)); // 전송 스레드가 꺼내 쓰다가 막힘
+        awaitTrue(emitter::isBlocked);
+        for (long version = 2; version <= 5; version++) { // 큐 상한 3 초과
+            asyncBroker.broadcast(SCHEDULE_ID, change(version));
+        }
+
+        assertThat(asyncBroker.connectionCount()).isZero();
+        emitter.unblock();
+        awaitTrue(emitter::isCompleted);
+    }
+
+    @Test
+    @DisplayName("heartbeat 주석은 한가한 LIVE 연결에만 전송, replay 중인 연결은 제외")
+    void LIVE_연결에만_heartbeat() {
+        EmitterContext live = broker.subscribe(SCHEDULE_ID);
+        broker.subscribe(SCHEDULE_ID); // replay 중
+        broker.completeReplay(SCHEDULE_ID, live, new SeatStatusDeltaRes(0, false, List.of()));
+        RecordingEmitter liveEmitter = createdEmitters.get(0);
+        RecordingEmitter replayingEmitter = createdEmitters.get(1);
+        liveEmitter.clear();
+
+        broker.sendHeartbeats();
+
+        assertThat(liveEmitter.events()).extracting(SentEvent::name).containsExactly(":");
+        assertThat(replayingEmitter.events()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("같은 변경은 연결 수와 무관하게 한 번만 직렬화")
+    void broadcast당_한_번만_직렬화() {
+        AtomicInteger serializations = new AtomicInteger();
+        ObjectMapper countingMapper = new ObjectMapper() {
+            @Override
+            public String writeValueAsString(Object value) throws JsonProcessingException {
+                serializations.incrementAndGet();
+                return super.writeValueAsString(value);
+            }
+        };
+        SeatStatusSseBroker countingBroker = brokerWith(countingMapper, Runnable::run, 100, 1_000);
+        for (int i = 0; i < 5; i++) {
+            EmitterContext ctx = countingBroker.subscribe(SCHEDULE_ID);
+            countingBroker.completeReplay(
+                    SCHEDULE_ID,
+                    ctx,
+                    new SeatStatusDeltaRes(0, false, List.of())
+            );
+        }
+        serializations.set(0);
+
+        countingBroker.broadcast(SCHEDULE_ID, change(1));
+
+        assertThat(serializations.get()).isEqualTo(1);
+        assertThat(createdEmitters)
+                .allSatisfy(emitter -> assertThat(emitter.eventIds()).contains("1"));
+    }
+
+    @Test
+    @DisplayName("일정당 연결 상한 초과: 503 거절")
+    void 연결_상한_초과_거절() {
+        SeatStatusSseBroker limited = brokerWith(new ObjectMapper(), Runnable::run, 2, 1_000);
+        limited.subscribe(SCHEDULE_ID);
+        limited.subscribe(SCHEDULE_ID);
+
+        assertThatThrownBy(() -> limited.subscribe(SCHEDULE_ID))
+                .isInstanceOfSatisfying(CustomException.class, e ->
+                        assertThat(e.getExceptionCode())
+                                .isEqualTo(SeatExceptionCode.SEAT_STATUS_STREAM_UNAVAILABLE));
+        assertThat(limited.connectionCount()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("종료 시 모든 연결 종료, 새 연결 거절")
+    void 종료시_전체_연결_종료() {
+        EmitterContext ctx = broker.subscribe(SCHEDULE_ID);
+        broker.completeReplay(SCHEDULE_ID, ctx, new SeatStatusDeltaRes(0, false, List.of()));
+        broker.subscribe(SCHEDULE_ID);
+
+        broker.stop();
+
+        assertThat(createdEmitters)
+                .allSatisfy(emitter -> assertThat(emitter.isCompleted()).isTrue());
+        assertThat(broker.connectionCount()).isZero();
+        assertThatThrownBy(() -> broker.subscribe(SCHEDULE_ID)).isInstanceOf(CustomException.class);
+    }
+
+    private SeatStatusSseBroker brokerWith(ObjectMapper objectMapper, Executor executor,
+                                           int maxConnections, int maxPendingEvents) {
+        return new SeatStatusSseBroker(objectMapper, executor, maxConnections, maxPendingEvents) {
+            @Override
+            SseEmitter newEmitter() {
+                RecordingEmitter emitter = new RecordingEmitter();
+                createdEmitters.add(emitter);
+                return emitter;
+            }
+        };
+    }
+
+    private ExecutorService newPool(int threads) {
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        executors.add(pool);
+        return pool;
+    }
+
+    private static void awaitTrue(BooleanSupplier condition) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(3).toNanos();
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("조건이 3초 안에 만족되지 않았습니다.");
+            }
+            Thread.onSpinWait();
+        }
+    }
+
     private static SeatStatusChangeRes change(long version) {
         return new SeatStatusChangeRes(version, version, SeatStatus.AVAILABLE);
     }
 
+    /** name이 ":"이면 주석(heartbeat) */
     private record SentEvent(String name, String id, Object data) {}
 
     /** 실제 HTTP 연결 없이 전송된 SSE 이벤트를 기록하는 emitter */
@@ -175,15 +344,55 @@ class SeatStatusSseBrokerTest {
 
         private final List<SentEvent> events = Collections.synchronizedList(new ArrayList<>());
         private volatile boolean failSends;
+        private volatile CountDownLatch gate;
+        private volatile boolean blocked;
+        private volatile boolean completed;
 
         @Override
         public void send(SseEventBuilder builder) {
+            CountDownLatch currentGate = gate;
+            if (currentGate != null) {
+                blocked = true;
+                try {
+                    currentGate.await(5, TimeUnit.SECONDS); // 소켓 쓰기에 막힌 느린 클라이언트 흉내
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    blocked = false;
+                }
+            }
             if (failSends) throw new IllegalStateException("broken pipe");
             events.add(parse(builder));
         }
 
+        @Override
+        public void complete() {
+            completed = true;
+            super.complete();
+        }
+
         void failNextSends() {
             failSends = true;
+        }
+
+        void blockSends() {
+            gate = new CountDownLatch(1);
+        }
+
+        void unblock() {
+            CountDownLatch currentGate = gate;
+            gate = null;
+            if (currentGate != null) {
+                currentGate.countDown();
+            }
+        }
+
+        boolean isBlocked() {
+            return blocked;
+        }
+
+        boolean isCompleted() {
+            return completed;
         }
 
         void clear() {
@@ -197,7 +406,10 @@ class SeatStatusSseBrokerTest {
         }
 
         List<String> eventIds() {
-            return events().stream().map(SentEvent::id).collect(Collectors.toList());
+            return events().stream()
+                    .map(SentEvent::id)
+                    .filter(id -> id != null)
+                    .collect(Collectors.toList());
         }
 
         private static SentEvent parse(SseEventBuilder builder) {
@@ -214,6 +426,9 @@ class SeatStatusSseBrokerTest {
                     continue;
                 }
                 if (data instanceof String text) {
+                    if (text.startsWith(":")) {
+                        return new SentEvent(":", null, text);
+                    }
                     // 여러 줄이 한 덩어리로 옴
                     for (String line : text.split("\n")) {
                         if (line.startsWith("event:")) name = line.substring("event:".length()).trim();

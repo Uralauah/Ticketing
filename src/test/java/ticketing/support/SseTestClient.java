@@ -32,12 +32,14 @@ public final class SseTestClient implements AutoCloseable {
     }
 
     private final int statusCode;
+    private final java.net.http.HttpHeaders headers;
     private final Stream<String> lines;
     private final BlockingQueue<Event> pending = new LinkedBlockingQueue<>();
     private final List<Event> received = new CopyOnWriteArrayList<>();
 
     private SseTestClient(HttpResponse<Stream<String>> response) {
         this.statusCode = response.statusCode();
+        this.headers = response.headers();
         this.lines = response.body();
         Thread reader = new Thread(this::readLoop, "sse-test-client");
         reader.setDaemon(true);
@@ -70,6 +72,10 @@ public final class SseTestClient implements AutoCloseable {
 
     public int statusCode() {
         return statusCode;
+    }
+
+    public String header(String name) {
+        return headers.firstValue(name).orElse(null);
     }
 
     /** 조건에 맞는 이벤트가 올 때까지 대기, 앞서 온 다른 이벤트는 건너뜀 */

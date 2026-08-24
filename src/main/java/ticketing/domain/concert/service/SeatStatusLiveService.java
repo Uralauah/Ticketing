@@ -18,7 +18,8 @@ public class SeatStatusLiveService {
     private final SeatStatusRedisRepository redisRepo;
     private final SeatStatusChangeCodec codec;
 
-    private static final long CHANGE_LOG_WINDOW = 100_000L;
+    /** 변경 로그 보관 수 = replay 상한 (더 뒤처지면 스냅샷부터) */
+    private static final long CHANGE_LOG_WINDOW = 1_000L;
 
     public void ensureInitialized(long scheduleId) {
         initializer.ensureInitialized(scheduleId);
@@ -40,6 +41,12 @@ public class SeatStatusLiveService {
                 .toList();
 
         return new SeatStatusSnapshotRes(current, seats);
+    }
+
+    /** since 없이 연결한 클라이언트는 스냅샷부터 받도록 함 */
+    public SeatStatusDeltaRes fullSyncRequired(long scheduleId) {
+        ensureInitialized(scheduleId);
+        return new SeatStatusDeltaRes(redisRepo.currentVersion(scheduleId), true, List.of());
     }
 
     /** SSE 재연결 시 replay용(또는 폴백용) */
