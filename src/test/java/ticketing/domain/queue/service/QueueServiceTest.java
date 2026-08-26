@@ -5,333 +5,445 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.redis.core.SetOperations;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
-import org.springframework.data.redis.core.ZSetOperations;
+import ticketing.domain.concert.exception.ScheduleExceptionCode;
+import ticketing.domain.concert.service.ScheduleValidator;
 import ticketing.domain.queue.dto.QueueEntryResponse;
 import ticketing.domain.queue.dto.QueueStatusResponse;
 import ticketing.domain.queue.exception.QueueExceptionCode;
 import ticketing.global.exception.CustomException;
+import ticketing.global.exception.ExceptionCode;
+import ticketing.global.queue.QueueProperties;
+import ticketing.global.queue.QueueScheduler;
+import ticketing.infra.redis.queue.QueueKeys;
+import ticketing.infra.redis.queue.QueueRedisRepository;
+import ticketing.infra.redis.queue.QueueRedisRepository.RecentAdmissions;
+import ticketing.support.MutableClock;
+import ticketing.support.RedisTestSupport;
 
 import java.time.Duration;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.anyDouble;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static ticketing.global.queue.QueueProperties.ACTIVE_EVENTS_KEY;
+import static org.mockito.Mockito.doThrow;
 
 @ExtendWith(MockitoExtension.class)
-@DisplayName("QueueService 단위 테스트")
-@SuppressWarnings("unchecked")
-class QueueServiceTest {
+@DisplayName("대기열 (Redis 7)")
+class QueueServiceTest extends RedisTestSupport {
 
-    @Mock StringRedisTemplate redisTemplate;
-    @Mock ValueOperations<String, String> valueOps;
-    @Mock ZSetOperations<String, String> zSetOps;
-    @Mock SetOperations<String, String> setOps;
-    @InjectMocks QueueService queueService;
+    private static final long     SCHEDULE_ID = 1L;
+    private static final Duration SESSION_TTL = Duration.ofMinutes(5);
 
-    private static final Long   EVENT_ID    = 1L;
-    private static final Long   USER_ID     = 100L;
-    private static final String USER_ID_STR = "100";
-    private static final String WAIT_KEY    = "queue:wait:1";
-    private static final String ACTIVE_KEY  = "queue:active:1";
-    private static final String TOKEN_KEY   = "queue:token:1:100";
-    private static final String TOKEN       = "test-token";
+    // 최대 입장 3명, 한 번에 2명씩 승격
+    private final QueueProperties properties = new QueueProperties(
+            3,
+            2,
+            Duration.ofSeconds(10),
+            SESSION_TTL,
+            Duration.ofHours(24),
+            Duration.ofSeconds(60)
+    );
+
+    @Mock private ScheduleValidator scheduleValidator;
+
+    // PEXPIREAT 등 Redis의 실제 시간 처리와 맞추기 위해 현재 시각에서 시작
+    private final MutableClock clock = new MutableClock(Instant.now());
+    private QueueService queueService;
+    private QueueScheduler scheduler;
 
     @BeforeEach
     void setUp() {
-        lenient().when(redisTemplate.opsForValue()).thenReturn(valueOps);
-        lenient().when(redisTemplate.opsForZSet()).thenReturn(zSetOps);
-        lenient().when(redisTemplate.opsForSet()).thenReturn(setOps);
+        QueueRedisRepository repository = new QueueRedisRepository(redisTemplate);
+        queueService = new QueueService(repository, properties, scheduleValidator, clock);
+        scheduler = new QueueScheduler(repository, properties, clock);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // enterQueue
+    // 진입
     // ─────────────────────────────────────────────────────────────────────────
 
     @Nested
-    @DisplayName("enterQueue")
-    class EnterQueue {
+    @DisplayName("진입")
+    class Enter {
 
         @Test
-        @DisplayName("정상 진입: 토큰·순위·예상 대기시간 반환")
+        @DisplayName("정상 진입: 토큰·1부터 시작하는 순번·조회 간격 힌트 반환")
         void 정상_진입() {
-            when_setIfAbsent_returns(true);
-            when(zSetOps.rank(WAIT_KEY, USER_ID_STR)).thenReturn(4L);
+            QueueEntryResponse response = queueService.enterQueue(SCHEDULE_ID, 100L);
 
-            QueueEntryResponse res = queueService.enterQueue(EVENT_ID, USER_ID);
-
-            assertThat(res.token()).isNotBlank();
-            assertThat(res.rank()).isEqualTo(5L);
-            assertThat(res.estimateWaitTime()).isEqualTo(0L);  // (4/200)*10 = 0
-            verify(zSetOps).addIfAbsent(eq(WAIT_KEY), eq(USER_ID_STR), anyDouble());
-            verify(setOps).add(ACTIVE_EVENTS_KEY, String.valueOf(EVENT_ID));
+            assertThat(response.token()).isNotBlank();
+            assertThat(response.rank()).isEqualTo(1L);
+            assertThat(response.pollAfterMs()).isEqualTo(1_000L);
+            assertThat(response.estimateWaitTime()).isPositive();
+            assertThat(redisTemplate.opsForSet().isMember(QueueKeys.ACTIVE_SCHEDULES, "1"))
+                    .isTrue();
         }
 
         @Test
-        @DisplayName("순위 200 이상: 대기 시간 10초 단위로 증가")
-        void 대기시간_계산() {
-            when_setIfAbsent_returns(true);
-            when(zSetOps.rank(WAIT_KEY, USER_ID_STR)).thenReturn(200L);
-
-            QueueEntryResponse res = queueService.enterQueue(EVENT_ID, USER_ID);
-
-            assertThat(res.rank()).isEqualTo(201L);
-            assertThat(res.estimateWaitTime()).isEqualTo(10L);  // (200/200)*10
-        }
-
-        @Test
-        @DisplayName("이미 진입한 사용자: ALREADY_IN_QUEUE 예외")
-        void 중복_진입_예외() {
-            when_setIfAbsent_returns(false);
-
-            assertThatThrownBy(() -> queueService.enterQueue(EVENT_ID, USER_ID))
-                    .isInstanceOf(CustomException.class)
-                    .extracting(e -> ((CustomException) e).getExceptionCode())
-                    .isEqualTo(QueueExceptionCode.ALREADY_IN_QUEUE);
-
-            verifyNoInteractions(zSetOps);
-        }
-
-        @Test
-        @DisplayName("rank 조회 실패: NOT_IN_QUEUE 예외 + 토큰 롤백")
-        void rank_실패시_토큰_롤백() {
-            when_setIfAbsent_returns(true);
-            when(zSetOps.rank(WAIT_KEY, USER_ID_STR)).thenReturn(null);
-
-            assertThatThrownBy(() -> queueService.enterQueue(EVENT_ID, USER_ID))
-                    .isInstanceOf(CustomException.class)
-                    .extracting(e -> ((CustomException) e).getExceptionCode())
-                    .isEqualTo(QueueExceptionCode.NOT_IN_QUEUE);
-
-            verify(redisTemplate).delete(TOKEN_KEY);
-        }
-
-        @Test
-        @DisplayName("동시 20개 요청: setIfAbsent 원자성으로 정확히 1건만 성공")
-        void 동시_요청_하나만_성공() throws InterruptedException {
-            int threadCount = 20;
-            AtomicBoolean acquired = new AtomicBoolean(false);
-
-            // AtomicBoolean.compareAndSet으로 Redis SET NX의 원자적 동작을 재현
-            when(valueOps.setIfAbsent(eq(TOKEN_KEY), anyString(), eq(Duration.ofHours(24))))
-                    .thenAnswer(inv -> acquired.compareAndSet(false, true));
-            lenient().when(zSetOps.rank(WAIT_KEY, USER_ID_STR)).thenReturn(0L);
-
-            CountDownLatch startLatch = new CountDownLatch(1);
-            CountDownLatch doneLatch  = new CountDownLatch(threadCount);
-            AtomicInteger successCnt  = new AtomicInteger(0);
-            AtomicInteger failCnt     = new AtomicInteger(0);
-
-            ExecutorService executor = Executors.newFixedThreadPool(threadCount);
-            for (int i = 0; i < threadCount; i++) {
-                executor.submit(() -> {
-                    try {
-                        startLatch.await();
-                        queueService.enterQueue(EVENT_ID, USER_ID);
-                        successCnt.incrementAndGet();
-                    } catch (CustomException e) {
-                        if (e.getExceptionCode() == QueueExceptionCode.ALREADY_IN_QUEUE)
-                            failCnt.incrementAndGet();
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    } finally {
-                        doneLatch.countDown();
-                    }
-                });
+        @DisplayName("진입 순서대로 순번 부여")
+        void 진입_순서대로_순번() {
+            List<Long> ranks = new ArrayList<>();
+            for (long userId = 1; userId <= 5; userId++) {
+                ranks.add(queueService.enterQueue(SCHEDULE_ID, userId).rank());
             }
-            startLatch.countDown();
-            assertThat(doneLatch.await(10, TimeUnit.SECONDS)).isTrue();
-            executor.shutdown();
-
-            assertThat(successCnt.get()).isEqualTo(1);
-            assertThat(failCnt.get()).isEqualTo(threadCount - 1);
+            assertThat(ranks).containsExactly(1L, 2L, 3L, 4L, 5L);
         }
 
-        private void when_setIfAbsent_returns(boolean value) {
-            when(valueOps.setIfAbsent(eq(TOKEN_KEY), anyString(), eq(Duration.ofHours(24))))
-                    .thenReturn(value);
+        @Test
+        @DisplayName("대기 중 재진입: ALREADY_IN_QUEUE 예외")
+        void 대기중_재진입_예외() {
+            queueService.enterQueue(SCHEDULE_ID, 100L);
+
+            assertCode(
+                    QueueExceptionCode.ALREADY_IN_QUEUE,
+                    () -> queueService.enterQueue(SCHEDULE_ID, 100L)
+            );
+        }
+
+        @Test
+        @DisplayName("입장 상태에서 재진입: ALREADY_ACTIVE 예외")
+        void 입장중_재진입_예외() {
+            queueService.enterQueue(SCHEDULE_ID, 100L);
+            scheduler.promoteWaitingUsers();
+
+            assertCode(
+                    QueueExceptionCode.ALREADY_ACTIVE,
+                    () -> queueService.enterQueue(SCHEDULE_ID, 100L)
+            );
+        }
+
+        @Test
+        @DisplayName("세션 종료 후 재진입 가능: 남아 있던 기존 토큰은 무효")
+        void 세션_종료후_재진입() {
+            String oldToken = queueService.enterQueue(SCHEDULE_ID, 100L).token();
+            scheduler.promoteWaitingUsers();
+            clock.advance(SESSION_TTL.plusSeconds(1));
+
+            QueueEntryResponse reentered = queueService.enterQueue(SCHEDULE_ID, 100L);
+
+            assertThat(reentered.token()).isNotEqualTo(oldToken);
+            assertThat(reentered.rank()).isEqualTo(1L);
+            assertCode(
+                    QueueExceptionCode.INVALID_TOKEN,
+                    () -> queueService.getQueueStatus(SCHEDULE_ID, 100L, oldToken)
+            );
+        }
+
+        @Test
+        @DisplayName("없는 일정: SCHEDULE_NOT_FOUND 예외, 대기열 키 미생성")
+        void 없는_일정_진입_예외() {
+            doThrow(new CustomException(ScheduleExceptionCode.SCHEDULE_NOT_FOUND))
+                    .when(scheduleValidator).validateExists(999L);
+
+            assertCode(
+                    ScheduleExceptionCode.SCHEDULE_NOT_FOUND,
+                    () -> queueService.enterQueue(999L, 100L)
+            );
+            assertThat(redisTemplate.hasKey(QueueKeys.waiting(999L))).isFalse();
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // getQueueStatus
+    // 상태 조회
     // ─────────────────────────────────────────────────────────────────────────
 
     @Nested
-    @DisplayName("getQueueStatus")
-    class GetQueueStatus {
-
-        @Test
-        @DisplayName("저장된 토큰 없음(만료): INVALID_TOKEN 예외")
-        void 저장_토큰_없음_예외() {
-            when(valueOps.get(TOKEN_KEY)).thenReturn(null);
-
-            assertExceptionCode(QueueExceptionCode.INVALID_TOKEN,
-                    () -> queueService.getQueueStatus(EVENT_ID, USER_ID, TOKEN));
-        }
+    @DisplayName("상태 조회")
+    class Status {
 
         @Test
         @DisplayName("토큰 불일치: INVALID_TOKEN 예외")
         void 토큰_불일치_예외() {
-            when(valueOps.get(TOKEN_KEY)).thenReturn("other-token");
+            queueService.enterQueue(SCHEDULE_ID, 100L);
 
-            assertExceptionCode(QueueExceptionCode.INVALID_TOKEN,
-                    () -> queueService.getQueueStatus(EVENT_ID, USER_ID, TOKEN));
+            assertCode(
+                    QueueExceptionCode.INVALID_TOKEN,
+                    () -> queueService.getQueueStatus(SCHEDULE_ID, 100L, "other")
+            );
         }
 
         @Test
-        @DisplayName("활성 사용자: active=true 반환")
-        void 활성_사용자() {
-            long futureExpiry = System.currentTimeMillis() + Duration.ofMinutes(3).toMillis();
-            when(valueOps.get(TOKEN_KEY)).thenReturn(TOKEN);
-            when(zSetOps.score(ACTIVE_KEY, USER_ID_STR)).thenReturn((double) futureExpiry);
+        @DisplayName("대기 중 사용자: 순번 반환, 조회 시각을 생존 신호로 기록")
+        void 대기중_사용자_생존신호_기록() {
+            queueService.enterQueue(SCHEDULE_ID, 1L);
+            String token = queueService.enterQueue(SCHEDULE_ID, 2L).token();
+            clock.advance(Duration.ofSeconds(30));
 
-            QueueStatusResponse res = queueService.getQueueStatus(EVENT_ID, USER_ID, TOKEN);
+            QueueStatusResponse status = queueService.getQueueStatus(SCHEDULE_ID, 2L, token);
 
-            assertThat(res.active()).isTrue();
-            assertThat(res.rank()).isEqualTo(0L);
-            assertThat(res.estimateWaitTime()).isEqualTo(0L);
+            assertThat(status.active()).isFalse();
+            assertThat(status.rank()).isEqualTo(2L);
+            assertThat(status.pollAfterMs()).isEqualTo(1_000L);
+            assertThat(redisTemplate.opsForZSet().score(QueueKeys.seen(SCHEDULE_ID), "2"))
+                    .isEqualTo((double) clock.millis());
         }
 
         @Test
-        @DisplayName("대기 중 사용자: active=false, 순위·대기시간 반환")
-        void 대기중_사용자() {
-            when(valueOps.get(TOKEN_KEY)).thenReturn(TOKEN);
-            when(zSetOps.score(ACTIVE_KEY, USER_ID_STR)).thenReturn(null);
-            when(zSetOps.rank(WAIT_KEY, USER_ID_STR)).thenReturn(200L);
+        @DisplayName("활성 사용자: 만료 시각(승격 시점 + 세션 시간) 반환")
+        void 활성_사용자_만료시각_반환() {
+            String token = queueService.enterQueue(SCHEDULE_ID, 100L).token();
+            long promotedAt = clock.millis();
+            scheduler.promoteWaitingUsers();
 
-            QueueStatusResponse res = queueService.getQueueStatus(EVENT_ID, USER_ID, TOKEN);
+            QueueStatusResponse status = queueService.getQueueStatus(SCHEDULE_ID, 100L, token);
 
-            assertThat(res.active()).isFalse();
-            assertThat(res.rank()).isEqualTo(201L);
-            assertThat(res.estimateWaitTime()).isEqualTo(10L);  // (200/200)*10
+            assertThat(status.active()).isTrue();
+            assertThat(status.activeExpiresAt()).isEqualTo(promotedAt + SESSION_TTL.toMillis());
         }
 
         @Test
-        @DisplayName("만료된 활성 세션에서 대기열로 폴백")
-        void 만료된_활성세션_대기열_폴백() {
-            long pastExpiry = System.currentTimeMillis() - 1_000;
-            when(valueOps.get(TOKEN_KEY)).thenReturn(TOKEN);
-            when(zSetOps.score(ACTIVE_KEY, USER_ID_STR)).thenReturn((double) pastExpiry);
-            when(zSetOps.rank(WAIT_KEY, USER_ID_STR)).thenReturn(10L);
-
-            QueueStatusResponse res = queueService.getQueueStatus(EVENT_ID, USER_ID, TOKEN);
-
-            assertThat(res.active()).isFalse();
-            assertThat(res.rank()).isEqualTo(11L);
-        }
-
-        @Test
-        @DisplayName("활성 세션 만료 + 대기열 미존재: SESSION_EXPIRED 예외")
+        @DisplayName("세션 만료 + 대기열 미존재: SESSION_EXPIRED 예외")
         void 세션_만료_예외() {
-            when(valueOps.get(TOKEN_KEY)).thenReturn(TOKEN);
-            when(zSetOps.score(ACTIVE_KEY, USER_ID_STR)).thenReturn(null);
-            when(zSetOps.rank(WAIT_KEY, USER_ID_STR)).thenReturn(null);
+            String token = queueService.enterQueue(SCHEDULE_ID, 100L).token();
+            scheduler.promoteWaitingUsers();
+            clock.advance(SESSION_TTL.plusMillis(1));
 
-            assertExceptionCode(QueueExceptionCode.SESSION_EXPIRED,
-                    () -> queueService.getQueueStatus(EVENT_ID, USER_ID, TOKEN));
+            assertCode(
+                    QueueExceptionCode.SESSION_EXPIRED,
+                    () -> queueService.getQueueStatus(SCHEDULE_ID, 100L, token)
+            );
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // validateActiveUser
+    // 입장 검증
     // ─────────────────────────────────────────────────────────────────────────
 
     @Nested
-    @DisplayName("validateActiveUser")
-    class ValidateActiveUser {
+    @DisplayName("입장 검증")
+    class ValidateActive {
 
         @Test
-        @DisplayName("저장된 토큰 없음: INVALID_TOKEN 예외")
-        void 저장_토큰_없음_예외() {
-            when(valueOps.get(TOKEN_KEY)).thenReturn(null);
+        @DisplayName("계속 호출해도 세션이 연장되지 않고 승격 시점 + 세션 시간에 끝난다")
+        void sessionIsNotExtended() {
+            String token = queueService.enterQueue(SCHEDULE_ID, 100L).token();
+            long expiresAt = clock.millis() + SESSION_TTL.toMillis();
+            scheduler.promoteWaitingUsers();
 
-            assertExceptionCode(QueueExceptionCode.INVALID_TOKEN,
-                    () -> queueService.validateActiveUser(EVENT_ID, USER_ID, TOKEN));
+            for (int minute = 0; minute < 4; minute++) {
+                clock.advance(Duration.ofMinutes(1));
+                queueService.validateActiveUser(SCHEDULE_ID, 100L, token);
+            }
+            assertThat(redisTemplate.opsForZSet().score(QueueKeys.active(SCHEDULE_ID), "100"))
+                    .isEqualTo((double) expiresAt);
+
+            clock.advance(Duration.ofMinutes(1).plusMillis(1));
+            assertCode(
+                    QueueExceptionCode.NOT_ACTIVE_USER,
+                    () -> queueService.validateActiveUser(SCHEDULE_ID, 100L, token)
+            );
         }
 
         @Test
-        @DisplayName("토큰 불일치: INVALID_TOKEN 예외")
+        @DisplayName("대기 중: NOT_ACTIVE_USER 예외, 토큰 불일치: INVALID_TOKEN 예외")
+        void 대기중_또는_토큰_불일치_예외() {
+            String token = queueService.enterQueue(SCHEDULE_ID, 100L).token();
+
+            assertCode(
+                    QueueExceptionCode.NOT_ACTIVE_USER,
+                    () -> queueService.validateActiveUser(SCHEDULE_ID, 100L, token)
+            );
+            assertCode(
+                    QueueExceptionCode.INVALID_TOKEN,
+                    () -> queueService.validateActiveUser(SCHEDULE_ID, 100L, "other")
+            );
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 승격
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("승격")
+    class Promotion {
+
+        @Test
+        @DisplayName("빈 슬롯과 배치 크기만큼만 승격")
+        void 빈_슬롯만큼_승격() {
+            enterAll(1, 5);
+
+            scheduler.promoteWaitingUsers();
+            assertThat(activeCount()).isEqualTo(2L);
+            scheduler.promoteWaitingUsers();
+            assertThat(activeCount()).isEqualTo(3L);
+            scheduler.promoteWaitingUsers();
+            assertThat(activeCount()).isEqualTo(3L);
+            assertThat(redisTemplate.opsForZSet().range(QueueKeys.waiting(SCHEDULE_ID), 0, -1))
+                    .containsExactly("4", "5");
+        }
+
+        @Test
+        @DisplayName("세션이 끝난 자리는 다음 대기자에게 돌아간다")
+        void expiredSessionsFreeSlots() {
+            enterAll(1, 3);
+            scheduler.promoteWaitingUsers();
+            scheduler.promoteWaitingUsers();
+            clock.advance(Duration.ofMinutes(4));
+            String token = queueService.enterQueue(SCHEDULE_ID, 4L).token();
+            scheduler.promoteWaitingUsers();
+            assertThat(queueService.getQueueStatus(SCHEDULE_ID, 4L, token).active()).isFalse();
+
+            clock.advance(Duration.ofMinutes(1).plusSeconds(1));
+            queueService.getQueueStatus(SCHEDULE_ID, 4L, token); // 대기자는 계속 상태 조회 (생존 신호)
+            scheduler.promoteWaitingUsers();
+
+            assertThat(queueService.getQueueStatus(SCHEDULE_ID, 4L, token).active()).isTrue();
+            assertThat(activeCount()).isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("생존 신호 끊긴 대기자: 승격 없이 대기열에서 제거")
+        void 이탈_대기자_제거() {
+            String leftToken = queueService.enterQueue(SCHEDULE_ID, 1L).token();  // 탭을 닫고 떠난 사용자
+            String waitingToken = queueService.enterQueue(SCHEDULE_ID, 2L).token();
+            clock.advance(Duration.ofSeconds(50));
+            queueService.getQueueStatus(SCHEDULE_ID, 2L, waitingToken);           // 계속 조회 중인 사용자
+            clock.advance(Duration.ofSeconds(11));
+
+            scheduler.promoteWaitingUsers();
+
+            assertThat(queueService.getQueueStatus(SCHEDULE_ID, 2L, waitingToken).active())
+                    .isTrue();
+            assertThat(redisTemplate.opsForZSet().score(QueueKeys.waiting(SCHEDULE_ID), "1"))
+                    .isNull();
+            assertCode(
+                    QueueExceptionCode.INVALID_TOKEN,
+                    () -> queueService.getQueueStatus(SCHEDULE_ID, 1L, leftToken)
+            );
+            assertThat(queueService.enterQueue(SCHEDULE_ID, 1L).rank()).isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("승격 시 토큰 수명을 세션 만료에 맞춤")
+        void 승격시_토큰_수명_조정() {
+            queueService.enterQueue(SCHEDULE_ID, 100L);
+
+            scheduler.promoteWaitingUsers();
+
+            Long ttlMs = redisTemplate.getExpire(
+                    QueueKeys.token(SCHEDULE_ID, 100L),
+                    java.util.concurrent.TimeUnit.MILLISECONDS
+            );
+            assertThat(ttlMs)
+                    .isBetween(SESSION_TTL.minusSeconds(5).toMillis(), SESSION_TTL.toMillis());
+        }
+
+        @Test
+        @DisplayName("대기자·입장자 없는 일정은 순회 대상에서 제외")
+        void 빈_일정_순회_제외() {
+            queueService.enterQueue(SCHEDULE_ID, 100L);
+            scheduler.promoteWaitingUsers();
+            clock.advance(SESSION_TTL.plusSeconds(1));
+
+            scheduler.promoteWaitingUsers();
+
+            assertThat(redisTemplate.opsForSet().isMember(QueueKeys.ACTIVE_SCHEDULES, "1"))
+                    .isFalse();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 나가기
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("나가기")
+    class Leave {
+
+        @Test
+        @DisplayName("입장 중 나가기: 슬롯 즉시 반납, 다음 대기자 입장")
+        void 입장중_나가기_슬롯_반납() {
+            List<String> tokens = enterAll(1, 4);
+            scheduler.promoteWaitingUsers();
+            scheduler.promoteWaitingUsers();
+
+            queueService.leave(SCHEDULE_ID, 1L, tokens.get(0));
+            scheduler.promoteWaitingUsers();
+
+            assertThat(queueService.getQueueStatus(SCHEDULE_ID, 4L, tokens.get(3)).active())
+                    .isTrue();
+            assertThat(activeCount()).isEqualTo(3L);
+        }
+
+        @Test
+        @DisplayName("대기 중 나가기: 대기열에서 제거, 재진입 가능")
+        void 대기중_나가기() {
+            String token = queueService.enterQueue(SCHEDULE_ID, 100L).token();
+
+            queueService.leave(SCHEDULE_ID, 100L, token);
+
+            assertThat(redisTemplate.opsForZSet().zCard(QueueKeys.waiting(SCHEDULE_ID))).isZero();
+            assertThat(queueService.enterQueue(SCHEDULE_ID, 100L).rank()).isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("다른 사람 토큰: INVALID_TOKEN 예외, 대기열 유지")
         void 토큰_불일치_예외() {
-            when(valueOps.get(TOKEN_KEY)).thenReturn("other-token");
+            queueService.enterQueue(SCHEDULE_ID, 100L);
 
-            assertExceptionCode(QueueExceptionCode.INVALID_TOKEN,
-                    () -> queueService.validateActiveUser(EVENT_ID, USER_ID, TOKEN));
+            assertCode(
+                    QueueExceptionCode.INVALID_TOKEN,
+                    () -> queueService.leave(SCHEDULE_ID, 100L, "other")
+            );
+            assertThat(redisTemplate.opsForZSet().zCard(QueueKeys.waiting(SCHEDULE_ID)))
+                    .isEqualTo(1L);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 매진
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("대기 시간 예측과 조회 간격")
+    class Estimate {
+
+        @Test
+        @DisplayName("최근 입장 기록 있음: 실제 입장 속도로 예측")
+        void 최근_입장_속도로_예측() {
+            long now = clock.millis();
+            // 1초 전에 200명이 입장: 관측 구간 = 1초 + 승격 주기 10초 → 초당 약 18명
+            RecentAdmissions recent = new RecentAdmissions(200, now - 1_000);
+
+            assertThat(queueService.estimateWaitSeconds(100, recent, now)).isEqualTo(6L);
         }
 
         @Test
-        @DisplayName("활성 큐 미등록: NOT_ACTIVE_USER 예외")
-        void 활성큐_미등록_예외() {
-            when(valueOps.get(TOKEN_KEY)).thenReturn(TOKEN);
-            when(zSetOps.score(ACTIVE_KEY, USER_ID_STR)).thenReturn(null);
+        @DisplayName("기록 없음: 배치 속도와 세션 회전 속도 중 느린 쪽으로 예측")
+        void 기록_없으면_설정_속도로_예측() {
+            // 최대 3명 / 세션 5분 = 초당 0.01명 < 배치 2명 / 10초
+            RecentAdmissions none = new RecentAdmissions(0, -1);
 
-            assertExceptionCode(QueueExceptionCode.NOT_ACTIVE_USER,
-                    () -> queueService.validateActiveUser(EVENT_ID, USER_ID, TOKEN));
+            assertThat(queueService.estimateWaitSeconds(1, none, clock.millis())).isEqualTo(100L);
         }
 
         @Test
-        @DisplayName("활성 세션 만료: NOT_ACTIVE_USER 예외")
-        void 활성_세션_만료_예외() {
-            long pastExpiry = System.currentTimeMillis() - 1_000;
-            when(valueOps.get(TOKEN_KEY)).thenReturn(TOKEN);
-            when(zSetOps.score(ACTIVE_KEY, USER_ID_STR)).thenReturn((double) pastExpiry);
+        @DisplayName("승격 시 입장 기록, 진입 응답의 대기 시간 예측에 사용")
+        void 승격시_입장_기록() {
+            enterAll(1, 2);
+            scheduler.promoteWaitingUsers();
+            clock.advance(Duration.ofSeconds(1));
 
-            assertExceptionCode(QueueExceptionCode.NOT_ACTIVE_USER,
-                    () -> queueService.validateActiveUser(EVENT_ID, USER_ID, TOKEN));
+            QueueEntryResponse late = queueService.enterQueue(SCHEDULE_ID, 3L);
+
+            // 2명 / 11초 → 1명에 6초
+            assertThat(late.estimateWaitTime()).isEqualTo(6L);
         }
 
         @Test
-        @DisplayName("유효한 활성 사용자: 세션 만료 시간 5분으로 갱신")
-        void 유효한_활성_사용자_만료_갱신() {
-            long futureExpiry = System.currentTimeMillis() + Duration.ofMinutes(3).toMillis();
-            when(valueOps.get(TOKEN_KEY)).thenReturn(TOKEN);
-            when(zSetOps.score(ACTIVE_KEY, USER_ID_STR)).thenReturn((double) futureExpiry);
-
-            assertThatNoException().isThrownBy(
-                    () -> queueService.validateActiveUser(EVENT_ID, USER_ID, TOKEN));
-
-            verify(zSetOps).add(eq(ACTIVE_KEY), eq(USER_ID_STR), anyDouble());
-            verify(valueOps).set(TOKEN_KEY, TOKEN, Duration.ofMinutes(5));
-        }
-
-        @Test
-        @DisplayName("활성 사용자 재호출: 만료 시간이 현재 시각 기준 5분 이후로 설정됨")
-        void 유효한_활성_사용자_갱신_시각_검증() {
-            long futureExpiry = System.currentTimeMillis() + Duration.ofMinutes(3).toMillis();
-            when(valueOps.get(TOKEN_KEY)).thenReturn(TOKEN);
-            when(zSetOps.score(ACTIVE_KEY, USER_ID_STR)).thenReturn((double) futureExpiry);
-
-            long before = System.currentTimeMillis();
-            queueService.validateActiveUser(EVENT_ID, USER_ID, TOKEN);
-            long after = System.currentTimeMillis();
-
-            org.mockito.ArgumentCaptor<Double> scoreCaptor =
-                    org.mockito.ArgumentCaptor.forClass(Double.class);
-            verify(zSetOps).add(eq(ACTIVE_KEY), eq(USER_ID_STR), scoreCaptor.capture());
-
-            long newExpiry = scoreCaptor.getValue().longValue();
-            long expectedMin = before + Duration.ofMinutes(5).toMillis();
-            long expectedMax = after  + Duration.ofMinutes(5).toMillis();
-            assertThat(newExpiry).isBetween(expectedMin, expectedMax);
+        @DisplayName("순번이 멀수록 조회 간격 증가")
+        void 순번별_조회_간격() {
+            assertThat(QueueService.pollAfterMs(1)).isEqualTo(1_000L);
+            assertThat(QueueService.pollAfterMs(100)).isEqualTo(1_000L);
+            assertThat(QueueService.pollAfterMs(101)).isEqualTo(3_000L);
+            assertThat(QueueService.pollAfterMs(1_000)).isEqualTo(3_000L);
+            assertThat(QueueService.pollAfterMs(1_001)).isEqualTo(10_000L);
         }
     }
 
@@ -339,15 +451,22 @@ class QueueServiceTest {
     // 공통 헬퍼
     // ─────────────────────────────────────────────────────────────────────────
 
-    private void assertExceptionCode(QueueExceptionCode expected, org.junit.jupiter.api.function.Executable action) {
-        assertThatThrownBy(action::execute)
-                .isInstanceOf(CustomException.class)
-                .extracting(e -> ((CustomException) e).getExceptionCode())
-                .isEqualTo(expected);
+    private List<String> enterAll(long fromUserId, long toUserId) {
+        return LongStream.rangeClosed(fromUserId, toUserId)
+                .mapToObj(userId -> queueService.enterQueue(SCHEDULE_ID, userId).token())
+                .toList();
     }
 
-    // Mockito when(...) 을 lenient 없이 쓰기 위한 편의 메서드
-    private static <T> org.mockito.stubbing.OngoingStubbing<T> when(T methodCall) {
-        return org.mockito.Mockito.when(methodCall);
+    private long activeCount() {
+        Long count = redisTemplate.opsForZSet().zCard(QueueKeys.active(SCHEDULE_ID));
+        return count == null ? 0 : count;
+    }
+
+    private static void assertCode(ExceptionCode expected, Runnable action) {
+        assertThatThrownBy(action::run)
+                .isInstanceOfSatisfying(
+                        CustomException.class,
+                        e -> assertThat(e.getExceptionCode()).isEqualTo(expected)
+                );
     }
 }

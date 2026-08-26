@@ -1,86 +1,63 @@
 package ticketing.global.queue;
 
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.redis.connection.StringRedisConnection;
-import org.springframework.data.redis.core.RedisCallback;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
-import org.springframework.scheduling.annotation.Scheduled;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.SchedulingConfigurer;
+import org.springframework.scheduling.config.ScheduledTaskRegistrar;
 import org.springframework.stereotype.Component;
+import ticketing.domain.queue.service.QueueService;
+import ticketing.infra.redis.queue.QueueRedisRepository;
+import ticketing.infra.redis.queue.QueueRedisRepository.PromotionResult;
 
-import java.time.Duration;
-import java.util.List;
+import java.time.Clock;
 import java.util.Set;
 
-import static ticketing.global.queue.QueueProperties.ACTIVE_EVENTS_KEY;
-import static ticketing.global.queue.QueueProperties.ACTIVE_QUEUE_KEY;
-import static ticketing.global.queue.QueueProperties.MAX_ACTIVE_USERS;
-import static ticketing.global.queue.QueueProperties.WAIT_QUEUE_KEY;
-
+/**
+ * 주기마다 빈 입장 슬롯만큼 대기자 승격
+ * 인스턴스마다 실행되므로 승격 속도는 인스턴스 수만큼 빨라짐 (최대 입장 인원은 Lua로 보장)
+ */
+@Slf4j
 @Component
 @RequiredArgsConstructor
-public class QueueScheduler {
-    private final StringRedisTemplate redisTemplate;
-    private static final int BATCH_SIZE = 200;
+public class QueueScheduler implements SchedulingConfigurer {
+    private final QueueRedisRepository queueRepository;
+    private final QueueProperties properties;
+    private final Clock clock;
 
-    private static final String PROMOTE_SCRIPT = """
-      local waitKey   = KEYS[1]
-      local activeKey = KEYS[2]
-      local eventsKey = KEYS[3]
-      local maxActive = tonumber(ARGV[1])
-      local batchSize = tonumber(ARGV[2])
-      local expiry    = tonumber(ARGV[3])
-      local now       = tonumber(ARGV[4])
-      local eventId   = ARGV[5]
+    @Override
+    public void configureTasks(ScheduledTaskRegistrar registrar) {
+        registrar.addFixedRateTask(this::promoteWaitingUsers, properties.promoteInterval());
+    }
 
-      redis.call('ZREMRANGEBYSCORE', activeKey, '-inf', now - 1)
-      local activeCount = redis.call('ZCARD', activeKey)
-      local available   = maxActive - activeCount
-      if available <= 0 then return 0 end
-
-      local toPromote = math.min(available, batchSize)
-      local members   = redis.call('ZRANGE', waitKey, 0, toPromote - 1)
-
-      for _, uid in ipairs(members) do
-          redis.call('ZADD', activeKey, expiry, uid)
-          redis.call('ZREM', waitKey, uid)
-      end
-
-      if redis.call('ZCARD', waitKey) == 0 and redis.call('ZCARD', activeKey) == 0 then
-          redis.call('SREM', eventsKey, eventId)
-      end
-
-      return #members
-      """;
-
-
-    @Scheduled(fixedRate = 10_000)
-    public void promoteWaitingUsers(){
-        Set<String> activeEvents = redisTemplate.opsForSet()
-                .members(ACTIVE_EVENTS_KEY);
-
-        if(activeEvents==null)
+    public void promoteWaitingUsers() {
+        Set<String> scheduleIds = queueRepository.activeScheduleIds();
+        if (scheduleIds == null || scheduleIds.isEmpty()) {
             return;
+        }
 
-        for (String eventId : activeEvents) {
-            promoteForEvent(eventId);
+        long now = clock.millis();
+        for (String scheduleId : scheduleIds) {
+            try {
+                promote(Long.parseLong(scheduleId), now);
+            } catch (RuntimeException e) {
+                // 한 일정의 실패가 다른 일정 승격을 막지 않도록 함
+                log.warn("대기열 승격 실패: scheduleId={}", scheduleId, e);
+            }
         }
     }
 
-    private void promoteForEvent(String eventId) {
-        String waitKey = String.format(WAIT_QUEUE_KEY, eventId);
-        String activeKey = String.format(ACTIVE_QUEUE_KEY, eventId);
-        long now = System.currentTimeMillis();
-        long expiry = now + Duration.ofMinutes(5).toMillis();
-
-        redisTemplate.execute(
-                new DefaultRedisScript<>(PROMOTE_SCRIPT, Long.class),
-                List.of(waitKey, activeKey, ACTIVE_EVENTS_KEY),
-                String.valueOf(MAX_ACTIVE_USERS),
-                String.valueOf(BATCH_SIZE),
-                String.valueOf(expiry),
-                String.valueOf(now),
-                eventId
-        );
+    private void promote(long scheduleId, long now) {
+        PromotionResult result = queueRepository.promote(
+                scheduleId,
+                properties.maxActiveUsers(),
+                properties.promoteBatchSize(),
+                now,
+                now + properties.activeSessionTtl().toMillis(),
+                now - properties.waitHeartbeatTimeout().toMillis(),
+                now - QueueService.ADMISSION_RATE_WINDOW.toMillis());
+        if (result.promoted() > 0 || result.staleRemoved() > 0) {
+            log.debug("대기열 승격: scheduleId={}, promoted={}, staleRemoved={}",
+                    scheduleId, result.promoted(), result.staleRemoved());
+        }
     }
 }
