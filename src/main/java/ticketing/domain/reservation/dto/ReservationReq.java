@@ -1,8 +1,11 @@
 package ticketing.domain.reservation.dto;
 
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+
 public record ReservationReq(
-        Long userId,
-        Long scheduleId,
-        Long seatId
+        @NotNull @Positive Long userId,
+        @NotNull @Positive Long scheduleId,
+        @NotNull @Positive Long seatId
 ) {
 }

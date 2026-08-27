@@ -1,6 +1,7 @@
 package ticketing.domain.reservation.controller;
 
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,7 +18,7 @@ public class ReservationController {
     private final ReservationService reservationService;
 
     @PostMapping()
-    public ResponseEntity<?> reserve(@RequestBody ReservationReq reservationReq) {
+    public ResponseEntity<?> reserve(@Valid @RequestBody ReservationReq reservationReq) {
         reservationService.reserve(reservationReq.userId(), reservationReq.scheduleId(), reservationReq.seatId());
         return ResponseEntity.ok("성공적으로 예약되었습니다.");
     }

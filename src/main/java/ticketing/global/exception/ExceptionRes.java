@@ -10,9 +10,13 @@ public record ExceptionRes(
         String message
 ) {
     public static ExceptionRes from(ExceptionCode exceptionCode) {
+        return of(exceptionCode, exceptionCode.getMessage());
+    }
+
+    public static ExceptionRes of(ExceptionCode exceptionCode, String message) {
         return ExceptionRes.builder()
                 .code(exceptionCode.getCode())
-                .message(exceptionCode.getMessage())
+                .message(message)
                 .build();
     }
 }

@@ -65,8 +65,9 @@ public class Seat {
     }
 
     public void reserve(Long scheduleId) {
-        validateAvailable();
+        // 다른 일정의 좌석은 상태와 무관하게 없는 좌석으로 처리
         validateSchedule(scheduleId);
+        validateAvailable();
         status = SeatStatus.RESERVED;
     }
 
