@@ -12,10 +12,13 @@ import ticketing.domain.concert.entity.Seat;
 import ticketing.domain.concert.repository.ConcertRepository;
 import ticketing.domain.concert.repository.ConcertScheduleRepository;
 import ticketing.domain.concert.repository.SeatRepository;
+import ticketing.domain.queue.service.QueueService;
 import ticketing.domain.reservation.service.ReservationService;
 import ticketing.domain.user.entity.User;
 import ticketing.domain.user.repository.UserRepository;
+import ticketing.global.queue.QueueScheduler;
 import ticketing.support.IntegrationTestSupport;
+import ticketing.support.QueueTestHelper;
 import ticketing.support.SseTestClient;
 
 import java.net.URI;
@@ -35,6 +38,8 @@ class SeatStatusRealtimeIntegrationTest extends IntegrationTestSupport {
     @LocalServerPort private int port;
 
     @Autowired private ReservationService reservationService;
+    @Autowired private QueueService queueService;
+    @Autowired private QueueScheduler queueScheduler;
     @Autowired private SeatRepository seatRepository;
     @Autowired private ConcertRepository concertRepository;
     @Autowired private ConcertScheduleRepository concertScheduleRepository;
@@ -42,6 +47,7 @@ class SeatStatusRealtimeIntegrationTest extends IntegrationTestSupport {
 
     private Long scheduleId;
     private Long userId;
+    private String queueToken;
     private final List<Long> seatIds = new ArrayList<>();
 
     @BeforeEach
@@ -65,12 +71,13 @@ class SeatStatusRealtimeIntegrationTest extends IntegrationTestSupport {
             ).getId());
         }
         userId = userRepository.save(new User("listener", 1_000_000)).getId();
+        queueToken = QueueTestHelper.activate(queueService, queueScheduler, scheduleId, userId);
     }
 
     @Test
-    @DisplayName("연결된 클라이언트는 예약 커밋 직후 좌석 변경 이벤트를 version 순서대로 받는다")
-    void reservationsArePushedInVersionOrder() {
-        try (SseTestClient client = SseTestClient.connect(streamUri())) {
+    @DisplayName("연결된 클라이언트: 예약 커밋 직후 좌석 변경 이벤트를 version 순서대로 수신")
+    void version_순서대로_전파() {
+        try (SseTestClient client = SseTestClient.connect(streamUri("&since=0"))) {
             assertThat(client.statusCode()).isEqualTo(200);
             client.awaitEvent("ready", TIMEOUT);
 
@@ -93,8 +100,7 @@ class SeatStatusRealtimeIntegrationTest extends IntegrationTestSupport {
     void since_없이_연결시_full_sync_요구() {
         reservationService.reserve(userId, scheduleId, seatIds.get(0));
 
-        try (SseTestClient client = SseTestClient.connect(URI.create(
-                "http://localhost:" + port + "/api/v1/schedule/" + scheduleId + "/seat-status/stream"))) {
+        try (SseTestClient client = SseTestClient.connect(streamUri(""))) {
             assertThat(client.header("X-Accel-Buffering")).isEqualTo("no");
 
             SseTestClient.Event first = client.awaitEvent(e -> !e.isComment(), TIMEOUT);
@@ -105,7 +111,22 @@ class SeatStatusRealtimeIntegrationTest extends IntegrationTestSupport {
         }
     }
 
-    private URI streamUri() {
-        return URI.create("http://localhost:" + port + "/api/v1/schedule/" + scheduleId + "/seat-status/stream?since=0");
+    @Test
+    @DisplayName("대기열 미통과: 스트림 연결 거절")
+    void 대기열_미통과시_스트림_거절() {
+        try (SseTestClient client = SseTestClient.connect(URI.create(
+                "http://localhost:" + port + "/api/v1/schedule/" + scheduleId
+                        + "/seat-status/stream?since=0&userId=" + userId + "&queueToken=wrong"
+        ))) {
+            assertThat(client.statusCode()).isEqualTo(401);
+        }
+    }
+
+    /** EventSource처럼 토큰을 쿼리 파라미터로 전달 */
+    private URI streamUri(String extraQuery) {
+        return URI.create(
+                "http://localhost:" + port + "/api/v1/schedule/" + scheduleId + "/seat-status/stream"
+                        + "?userId=" + userId + "&queueToken=" + queueToken + extraQuery
+        );
     }
 }

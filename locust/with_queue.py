@@ -87,7 +87,8 @@ class QueuedUser(HttpUser):
             return
 
         with self.client.get(
-            f"/api/v1/schedule/{SCHEDULE_ID}/seat-status/snapshot/{self.user_id}",
+            f"/api/v1/schedule/{SCHEDULE_ID}/seat-status/snapshot",
+            params={"userId": self.user_id},
             headers={"X-Queue-Token": self.token},
             name="[Seat] snapshot (queued)",
             catch_response=True,

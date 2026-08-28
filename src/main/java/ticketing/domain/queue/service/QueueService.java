@@ -1,6 +1,7 @@
 package ticketing.domain.queue.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import ticketing.domain.concert.service.ScheduleValidator;
 import ticketing.domain.queue.dto.QueueEntryResponse;
@@ -17,6 +18,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.UUID;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class QueueService {
@@ -96,6 +98,18 @@ public class QueueService {
     public void leave(long scheduleId, long userId, String token) {
         if (!queueRepository.release(scheduleId, userId, token)) {
             throw new CustomException(QueueExceptionCode.INVALID_TOKEN);
+        }
+    }
+
+    /**
+     * 예약 커밋 후 입장 슬롯 반납 (대기열 1회 통과 = 예약 1건)
+     * 반납 실패 시 로그만 남김 (세션 만료 때 회수)
+     */
+    public void releaseAfterReservation(long scheduleId, long userId, String token) {
+        try {
+            queueRepository.release(scheduleId, userId, token);
+        } catch (RuntimeException e) {
+            log.warn("예약 후 입장 슬롯 반납 실패: scheduleId={}, userId={}", scheduleId, userId, e);
         }
     }
 

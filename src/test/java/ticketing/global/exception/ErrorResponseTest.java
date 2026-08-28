@@ -74,12 +74,13 @@ class ErrorResponseTest extends IntegrationTestSupport {
     }
 
     @Test
-    @DisplayName("SSE 요청에서 난 오류도 원래 상태 코드와 JSON 본문으로 응답한다")
-    void errorOnEventStreamRequest() throws Exception {
-        mockMvc.perform(get("/api/v1/schedule/999999/seat-status/stream").param("since", "0")
+    @DisplayName("SSE 요청 오류도 원래 상태 코드와 JSON 본문으로 응답")
+    void SSE_요청_오류_JSON_응답() throws Exception {
+        mockMvc.perform(get("/api/v1/schedule/1/seat-status/stream")
+                        .param("since", "0")
                         .accept(MediaType.TEXT_EVENT_STREAM))
-                .andExpect(status().isNotFound())
+                .andExpect(status().isBadRequest())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.code").value("SCHEDULE-404-001"));
+                .andExpect(jsonPath("$.code").value("QUEUE-400-002"));
     }
 }

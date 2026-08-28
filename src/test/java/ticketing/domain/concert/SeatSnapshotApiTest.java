@@ -118,7 +118,8 @@ class SeatSnapshotApiTest extends IntegrationTestSupport {
     }
 
     private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder snapshotRequest() {
-        return get("/api/v1/schedule/{scheduleId}/seat-status/snapshot/{userId}", scheduleId, userId)
+        return get("/api/v1/schedule/{scheduleId}/seat-status/snapshot", scheduleId)
+                .param("userId", String.valueOf(userId))
                 .header("X-Queue-Token", token);
     }
 

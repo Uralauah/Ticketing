@@ -35,7 +35,7 @@ class NoQueueUser(HttpUser):
     def rush_seat_access(self):
         """큐 검증 없이 좌석 조회 엔드포인트 직접 호출"""
         with self.client.get(
-            f"/api/v1/schedule/{SCHEDULE_ID}/seat-status/snapshot/no-queue/{self.user_id}",
+            f"/api/v1/experiment/schedule/{SCHEDULE_ID}/seat-status/snapshot",
             name="[Seat] direct (no-queue)",
             catch_response=True,
         ) as resp:

@@ -17,7 +17,6 @@ import ticketing.domain.concert.service.SeatSnapshotCache;
 import ticketing.domain.concert.service.SeatStatusCacheService;
 import ticketing.domain.concert.service.SeatStatusLiveService;
 import ticketing.domain.concert.service.SeatStatusStreamService;
-import ticketing.domain.queue.service.QueueService;
 
 import java.util.List;
 
@@ -41,25 +40,15 @@ public class ConcertScheduleController {
     private final SeatStatusLiveService seatStatusLiveService;
     private final SeatStatusStreamService seatStatusStreamService;
     private final SeatSnapshotCache seatSnapshotCache;
-    private final QueueService queueService;
+
+    // seat-status API는 ActiveUserInterceptor에서 대기열 통과 여부 확인
 
     /** 응답 형식: {@link SeatStatusSnapshotRes} */
-    @GetMapping("/{scheduleId}/seat-status/snapshot/{userId}")
+    @GetMapping("/{scheduleId}/seat-status/snapshot")
     public ResponseEntity<byte[]> snapshot(@PathVariable long scheduleId,
-                                           @PathVariable long userId,
-                                           @RequestHeader("X-Queue-Token") String token,
-                                           @RequestHeader(value = HttpHeaders.ACCEPT_ENCODING, required = false) String acceptEncoding,
+                                           @RequestHeader(value = HttpHeaders.ACCEPT_ENCODING, required = false)
+                                           String acceptEncoding,
                                            WebRequest request) {
-        queueService.validateActiveUser(scheduleId, userId, token);
-
-        return SeatSnapshotResponses.of(seatSnapshotCache.get(scheduleId), acceptEncoding, request);
-    }
-
-    @GetMapping("/{scheduleId}/seat-status/snapshot/no-queue/{userId}")
-    public ResponseEntity<byte[]> noQueueSnapshot(@PathVariable long scheduleId,
-                                                  @PathVariable long userId,
-                                                  @RequestHeader(value = HttpHeaders.ACCEPT_ENCODING, required = false) String acceptEncoding,
-                                                  WebRequest request) {
         return SeatSnapshotResponses.of(seatSnapshotCache.get(scheduleId), acceptEncoding, request);
     }
 
