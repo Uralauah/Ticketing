@@ -31,11 +31,14 @@ services:
       retries: 5
 
   # ── Spring Boot App ───────────────────────────────────────────────────────
+  # perf 프로필: 더미 데이터·좌석 상태 미리 적재, 실험용 엔드포인트
   app:
     build: .
     ports:
       - "8080:8080"
+      - "8081:8081"   # actuator(헬스·지표), 운영에서는 외부 노출 금지
     environment:
+      SPRING_PROFILES_ACTIVE: perf
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ticketing?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=UTF-8
       SPRING_DATASOURCE_USERNAME: ticket
       SPRING_DATASOURCE_PASSWORD: ticket1234
@@ -46,12 +49,22 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # 데이터·좌석 상태 적재가 끝나야 readiness 통과
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health/readiness || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
     deploy:
       resources:
         limits:
+          # 부하 발생기와 CPU를 나눠 쓰므로 측정 조건 고정
+          cpus: "4"
           memory: 1.5g
 
   # ── Locust (대기열 있음 — 기본) ────────────────────────────────────────────
+  # --processes -1: 코어 수만큼 워커 실행
   locust:
     image: locustio/locust
     ports:
@@ -60,9 +73,10 @@ services:
       LOCUST_HOST: http://app:8080
     volumes:
       - ./locust:/mnt/locust
-    command: -f /mnt/locust/with_queue.py --config /mnt/locust/locust.conf
+    command: -f /mnt/locust/with_queue.py --config /mnt/locust/locust.conf --processes -1
     depends_on:
-      - app
+      app:
+        condition: service_healthy
 
   # ── Locust (대기열 없음 — 비교용) ─────────────────────────────────────────
   locust-no-queue:
@@ -73,11 +87,55 @@ services:
       LOCUST_HOST: http://app:8080
     volumes:
       - ./locust:/mnt/locust
-    command: -f /mnt/locust/no_queue.py --config /mnt/locust/locust.conf
+    command: -f /mnt/locust/no_queue.py --config /mnt/locust/locust.conf --processes -1
+    depends_on:
+      app:
+        condition: service_healthy
+    profiles:
+      - no-queue
+
+  # ── Locust (SSE 전파 지연 + 예약) ─────────────────────────────────────────
+  locust-realtime:
+    image: locustio/locust
+    ports:
+      - "8091:8089"
+    environment:
+      LOCUST_HOST: http://app:8080
+    volumes:
+      - ./locust:/mnt/locust
+    command: -f /mnt/locust/realtime.py --config /mnt/locust/locust.conf --users 550 --spawn-rate 50 --run-time 3m
+    depends_on:
+      app:
+        condition: service_healthy
+    profiles:
+      - realtime
+
+  # ── k6 (도착률 기반 open model) ───────────────────────────────────────────
+  k6:
+    image: grafana/k6
+    environment:
+      BASE: http://app:8080
+      MODE: cached
+    volumes:
+      - ./perf/k6:/scripts
+    command: run /scripts/snapshot-arrival.js
+    depends_on:
+      app:
+        condition: service_healthy
+    profiles:
+      - k6
+
+  # ── Prometheus (서버 지표 수집) ───────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./perf/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     depends_on:
       - app
     profiles:
-      - no-queue
+      - monitoring
 
 volumes:
   mysql_data:

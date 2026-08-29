@@ -98,7 +98,8 @@ class SeatStatusSseBrokerTest {
 
         assertThat(emitter.events()).extracting(SentEvent::name).containsExactly("seat-status");
         assertThat(emitter.eventIds()).containsExactly("3");
-        assertThat(emitter.events().get(0).data()).isEqualTo("{\"version\":3,\"seatId\":3,\"status\":\"AVAILABLE\"}");
+        assertThat(emitter.events().get(0).data())
+                .isEqualTo("{\"version\":3,\"seatId\":3,\"status\":\"AVAILABLE\",\"publishedAt\":1003}");
     }
 
     @Test
@@ -333,7 +334,7 @@ class SeatStatusSseBrokerTest {
     }
 
     private static SeatStatusChangeRes change(long version) {
-        return new SeatStatusChangeRes(version, version, SeatStatus.AVAILABLE);
+        return new SeatStatusChangeRes(version, version, SeatStatus.AVAILABLE, 1_000L + version);
     }
 
     /** name이 ":"이면 주석(heartbeat) */

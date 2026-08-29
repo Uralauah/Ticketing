@@ -20,6 +20,7 @@ import ticketing.support.ConcurrentRunner;
 import ticketing.support.RedisTestSupport;
 
 import java.io.ByteArrayInputStream;
+import java.time.Clock;
 import java.util.List;
 import java.util.Properties;
 import java.util.Set;
@@ -45,9 +46,24 @@ class SeatSnapshotCacheTest extends RedisTestSupport {
     @BeforeEach
     void setUp() {
         redisRepo = new SeatStatusRedisRepository(redisTemplate);
-        SeatStatusInitializer initializer = new SeatStatusInitializer(seatRepository, concertScheduleRepository, redisRepo);
-        SeatStatusLiveService liveService = new SeatStatusLiveService(initializer, redisRepo, new SeatStatusChangeCodec());
-        cache = new SeatSnapshotCache(liveService, initializer, redisRepo, objectMapper, new SimpleMeterRegistry());
+        SeatStatusInitializer initializer = new SeatStatusInitializer(
+                seatRepository,
+                concertScheduleRepository,
+                redisRepo
+        );
+        SeatStatusLiveService liveService = new SeatStatusLiveService(
+                initializer,
+                redisRepo,
+                new SeatStatusChangeCodec(),
+                Clock.systemUTC()
+        );
+        cache = new SeatSnapshotCache(
+                liveService,
+                initializer,
+                redisRepo,
+                objectMapper,
+                new SimpleMeterRegistry()
+        );
 
         when(concertScheduleRepository.existsById(SCHEDULE_ID)).thenReturn(true);
         when(seatRepository.findSeatStatusByScheduleId(SCHEDULE_ID)).thenReturn(List.of(
@@ -77,7 +93,13 @@ class SeatSnapshotCacheTest extends RedisTestSupport {
     @DisplayName("version 변경 시 한 번 재생성: 새 상태·새 ETag 반환")
     void version_변경시_재생성() throws Exception {
         SeatSnapshotCache.Snapshot before = cache.get(SCHEDULE_ID);
-        redisRepo.recordChangeAndPublishAtomic(SCHEDULE_ID, 2L, SeatStatus.RESERVED, 1_000);
+        redisRepo.recordChangeAndPublishAtomic(
+                SCHEDULE_ID,
+                2L,
+                SeatStatus.RESERVED,
+                1_000,
+                System.currentTimeMillis()
+        );
         resetCommandStats();
 
         SeatSnapshotCache.Snapshot after = cache.get(SCHEDULE_ID);
@@ -92,9 +114,15 @@ class SeatSnapshotCacheTest extends RedisTestSupport {
     }
 
     @Test
-    @DisplayName("Redis가 비워져 version이 되돌아가도 옛 스냅샷을 돌려주지 않는다")
-    void rebuildsWhenVersionGoesBackwards() {
-        redisRepo.recordChangeAndPublishAtomic(SCHEDULE_ID, 2L, SeatStatus.RESERVED, 1_000);
+    @DisplayName("Redis가 비워져 version이 되돌아가도 옛 스냅샷 미반환")
+    void version_역행시_재생성() {
+        redisRepo.recordChangeAndPublishAtomic(
+                SCHEDULE_ID,
+                2L,
+                SeatStatus.RESERVED,
+                1_000,
+                System.currentTimeMillis()
+        );
         assertThat(cache.get(SCHEDULE_ID).version()).isEqualTo(1L);
 
         flushRedis();

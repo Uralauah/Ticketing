@@ -4,10 +4,8 @@
 모든 유저가 대기열 없이 즉시 좌석 조회 시도
 '대기열이 없었다면' 서버가 어떤 상태였을지 재현하는 시나리오다.
 
-서버 측 준비:
-  큐 검증 없이 좌석을 조회할 수 있는 엔드포인트가 필요하다.
-  - /api/v1/concerts/{scheduleId}/seats  (큐 미적용)
-  또는 기존 엔드포인트에서 큐 검증을 비활성화하는 프로필을 사용한다.
+서버는 perf 프로필로 실행 (대기열 검증 없는 비교용 엔드포인트)
+  SNAPSHOT_MODE=legacy: 캐시 이전 방식 엔드포인트 호출
 
 기대 결과:
   - 2000명이 동시에 좌석 조회 → 서버 부하 급등
@@ -17,11 +15,16 @@
   locust -f no_queue.py --users 2000 --spawn-rate 100 --run-time 2m
 """
 
+import os
 import random
 
 from locust import HttpUser, between, events, task
 
-SCHEDULE_ID = 1
+from common import SCHEDULE_ID, USER_ID_RANGE
+
+SNAPSHOT_PATH = f"/api/v1/experiment/schedule/{SCHEDULE_ID}/seat-status/snapshot"
+if os.environ.get("SNAPSHOT_MODE") == "legacy":
+    SNAPSHOT_PATH += "/legacy"
 
 
 class NoQueueUser(HttpUser):
@@ -29,13 +32,13 @@ class NoQueueUser(HttpUser):
     wait_time = between(0.5, 1.5)  # with_queue와 동일한 대기 시간
 
     def on_start(self):
-        self.user_id = random.randint(1, 100_000)  # DB에 존재하는 유저 범위
+        self.user_id = random.randint(*USER_ID_RANGE)  # 시드 데이터의 유저 범위
 
     @task
     def rush_seat_access(self):
         """큐 검증 없이 좌석 조회 엔드포인트 직접 호출"""
         with self.client.get(
-            f"/api/v1/experiment/schedule/{SCHEDULE_ID}/seat-status/snapshot",
+            SNAPSHOT_PATH,
             name="[Seat] direct (no-queue)",
             catch_response=True,
         ) as resp:

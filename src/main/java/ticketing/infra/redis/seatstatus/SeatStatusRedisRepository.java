@@ -33,11 +33,13 @@ public class SeatStatusRedisRepository {
             -- ARGV[2] status
             -- ARGV[3] window
             -- ARGV[4] channel
+            -- ARGV[5] publishedAt (epoch ms)
 
             local v = redis.call('INCR', KEYS[1])
             redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
 
-            local member = tostring(v) .. '|' .. ARGV[1] .. '|' .. ARGV[2]
+            -- SeatStatusChangeCodec과 같은 형식
+            local member = tostring(v) .. '|' .. ARGV[1] .. '|' .. ARGV[2] .. '|' .. ARGV[5]
             redis.call('ZADD', KEYS[3], v, member)
 
             local window = tonumber(ARGV[3])
@@ -152,7 +154,8 @@ public class SeatStatusRedisRepository {
         );
     }
 
-    public long recordChangeAndPublishAtomic(long scheduleId, long seatId, SeatStatus status, long window) {
+    public long recordChangeAndPublishAtomic(long scheduleId, long seatId, SeatStatus status, long window,
+                                             long publishedAtMs) {
         String channel = SeatStatusTopic.channel(scheduleId);
 
         Long v = redis.execute(
@@ -165,7 +168,8 @@ public class SeatStatusRedisRepository {
                 String.valueOf(seatId),
                 status.name(),
                 String.valueOf(window),
-                channel
+                channel,
+                String.valueOf(publishedAtMs)
         );
 
         return v == null ? 0L : v;

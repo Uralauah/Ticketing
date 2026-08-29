@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import ticketing.domain.concert.entity.Concert;
 import ticketing.domain.concert.entity.ConcertSchedule;
@@ -23,6 +24,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @AutoConfigureMockMvc
 @ActiveProfiles({"test", "perf"})
+// 10만 건 적재는 LoadTestDataSeederTest에서 따로 검증
+@TestPropertySource(properties = "ticketing.seed.load-test-data=false")
 @DisplayName("perf 프로필의 비교 측정용 엔드포인트")
 class SeatStatusExperimentEndpointTest extends IntegrationTestSupport {
 

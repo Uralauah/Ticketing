@@ -76,7 +76,13 @@ class SeatStatusInitializerTest extends RedisTestSupport {
         assertThat(queried.await(5, SECONDS)).isTrue();
 
         // 초기화가 DB 결과를 쓰기 전에 좌석 77 예약이 커밋되어 Redis에 기록
-        redisRepo.recordChangeAndPublishAtomic(SCHEDULE_ID, 77L, SeatStatus.RESERVED, 1_000);
+        redisRepo.recordChangeAndPublishAtomic(
+                SCHEDULE_ID,
+                77L,
+                SeatStatus.RESERVED,
+                1_000,
+                System.currentTimeMillis()
+        );
         release.countDown();
         init.get(5, SECONDS);
 

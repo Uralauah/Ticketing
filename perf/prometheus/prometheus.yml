@@ -1,0 +1,9 @@
+# docker compose --profile monitoring up 으로 함께 실행, http://localhost:9090
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: ticketing
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["app:8081"]

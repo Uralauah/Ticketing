@@ -90,7 +90,8 @@ class SeatStatusRealtimeIntegrationTest extends IntegrationTestSupport {
                 assertThat(event.id()).isEqualTo(String.valueOf(i + 1));
                 assertThat(event.data())
                         .contains("\"seatId\":" + seatIds.get(i))
-                        .contains("\"status\":\"RESERVED\"");
+                        .contains("\"status\":\"RESERVED\"")
+                        .contains("\"publishedAt\":");
             }
         }
     }

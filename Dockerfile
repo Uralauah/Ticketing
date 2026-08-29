@@ -1,5 +1,7 @@
+# Alpine 기반 Temurin 17은 amd64만 제공 → Ubuntu 기반 이미지 사용
+
 # ── Stage 1: Build ──────────────────────────────────────────────────────────
-FROM eclipse-temurin:17-jdk-alpine AS builder
+FROM eclipse-temurin:17-jdk AS builder
 WORKDIR /workspace
 
 # 의존성 레이어 캐싱 — src 변경 시에도 의존성 재다운로드 방지
@@ -13,10 +15,10 @@ COPY src src
 RUN ./gradlew bootJar -x test --no-daemon -q
 
 # ── Stage 2: Run ─────────────────────────────────────────────────────────────
-FROM eclipse-temurin:17-jre-alpine
+FROM eclipse-temurin:17-jre
 WORKDIR /app
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN groupadd --system appgroup && useradd --system --gid appgroup appuser
 USER appuser
 
 COPY --from=builder /workspace/build/libs/*.jar app.jar

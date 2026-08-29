@@ -7,6 +7,7 @@ import ticketing.domain.concert.entity.SeatStatus;
 import ticketing.infra.redis.seatstatus.SeatStatusChangeCodec;
 import ticketing.infra.redis.seatstatus.SeatStatusRedisRepository;
 
+import java.time.Clock;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -17,6 +18,7 @@ public class SeatStatusLiveService {
     private final SeatStatusInitializer initializer;
     private final SeatStatusRedisRepository redisRepo;
     private final SeatStatusChangeCodec codec;
+    private final Clock clock;
 
     /** 변경 로그 보관 수 = replay 상한 (더 뒤처지면 스냅샷부터) */
     private static final long CHANGE_LOG_WINDOW = 1_000L;
@@ -81,6 +83,6 @@ public class SeatStatusLiveService {
      * 초기화는 HSETNX 적재라 먼저 기록한 상태를 덮어쓰지 않으므로 초기화 대기 없음
      */
     public long recordChange(long scheduleId, long seatId, SeatStatus status) {
-        return redisRepo.recordChangeAndPublishAtomic(scheduleId, seatId, status, CHANGE_LOG_WINDOW);
+        return redisRepo.recordChangeAndPublishAtomic(scheduleId, seatId, status, CHANGE_LOG_WINDOW, clock.millis());
     }
 }
