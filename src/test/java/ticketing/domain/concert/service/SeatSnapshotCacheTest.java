@@ -2,6 +2,7 @@ package ticketing.domain.concert.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -46,7 +47,7 @@ class SeatSnapshotCacheTest extends RedisTestSupport {
         redisRepo = new SeatStatusRedisRepository(redisTemplate);
         SeatStatusInitializer initializer = new SeatStatusInitializer(seatRepository, concertScheduleRepository, redisRepo);
         SeatStatusLiveService liveService = new SeatStatusLiveService(initializer, redisRepo, new SeatStatusChangeCodec());
-        cache = new SeatSnapshotCache(liveService, initializer, redisRepo, objectMapper);
+        cache = new SeatSnapshotCache(liveService, initializer, redisRepo, objectMapper, new SimpleMeterRegistry());
 
         when(concertScheduleRepository.existsById(SCHEDULE_ID)).thenReturn(true);
         when(seatRepository.findSeatStatusByScheduleId(SCHEDULE_ID)).thenReturn(List.of(

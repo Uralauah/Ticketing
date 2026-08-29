@@ -1,5 +1,6 @@
 package ticketing.domain.queue.service;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -60,7 +61,7 @@ class QueueServiceTest extends RedisTestSupport {
     void setUp() {
         QueueRedisRepository repository = new QueueRedisRepository(redisTemplate);
         queueService = new QueueService(repository, properties, scheduleValidator, clock);
-        scheduler = new QueueScheduler(repository, properties, clock);
+        scheduler = new QueueScheduler(repository, properties, clock, new SimpleMeterRegistry());
     }
 
     // ─────────────────────────────────────────────────────────────────────────

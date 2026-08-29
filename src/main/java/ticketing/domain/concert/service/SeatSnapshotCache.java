@@ -2,7 +2,8 @@ package ticketing.domain.concert.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.springframework.stereotype.Component;
 import ticketing.domain.concert.dto.SeatStatusSnapshotRes;
 import ticketing.infra.redis.seatstatus.SeatStatusRedisRepository;
@@ -20,7 +21,6 @@ import java.util.zip.GZIPOutputStream;
  * 재생성 중에는 직전 스냅샷 반환 (이후 변경은 클라이언트가 replay로 적용)
  */
 @Component
-@RequiredArgsConstructor
 public class SeatSnapshotCache {
 
     public record Snapshot(long version, byte[] json, byte[] gzipped) {
@@ -34,9 +34,24 @@ public class SeatSnapshotCache {
     private final SeatStatusInitializer initializer;
     private final SeatStatusRedisRepository redisRepo;
     private final ObjectMapper objectMapper;
+    private final Timer buildTimer;
 
     private final Map<Long, Snapshot> snapshots = new ConcurrentHashMap<>();
     private final Map<Long, ReentrantLock> rebuildLocks = new ConcurrentHashMap<>();
+
+    public SeatSnapshotCache(SeatStatusLiveService liveService,
+                             SeatStatusInitializer initializer,
+                             SeatStatusRedisRepository redisRepo,
+                             ObjectMapper objectMapper,
+                             MeterRegistry meterRegistry) {
+        this.liveService = liveService;
+        this.initializer = initializer;
+        this.redisRepo = redisRepo;
+        this.objectMapper = objectMapper;
+        this.buildTimer = Timer.builder("ticketing.seat.snapshot.build")
+                .description("좌석 상태 스냅샷 재생성(HGETALL + 직렬화 + 압축)")
+                .register(meterRegistry);
+    }
 
     public Snapshot get(long scheduleId) {
         long current = currentVersion(scheduleId);
@@ -60,7 +75,7 @@ public class SeatSnapshotCache {
                 return latest;
             }
 
-            Snapshot built = build(scheduleId);
+            Snapshot built = buildTimer.record(() -> build(scheduleId));
             snapshots.put(scheduleId, built);
             return built;
         } finally {

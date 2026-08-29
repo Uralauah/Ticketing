@@ -1,6 +1,7 @@
 package ticketing.global.queue;
 
-import lombok.RequiredArgsConstructor;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.SchedulingConfigurer;
 import org.springframework.scheduling.config.ScheduledTaskRegistrar;
@@ -18,11 +19,25 @@ import java.util.Set;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class QueueScheduler implements SchedulingConfigurer {
     private final QueueRedisRepository queueRepository;
     private final QueueProperties properties;
     private final Clock clock;
+    private final Counter promotedCounter;
+    private final Counter staleRemovedCounter;
+
+    public QueueScheduler(QueueRedisRepository queueRepository, QueueProperties properties, Clock clock,
+                          MeterRegistry meterRegistry) {
+        this.queueRepository = queueRepository;
+        this.properties = properties;
+        this.clock = clock;
+        this.promotedCounter = Counter.builder("ticketing.queue.promoted")
+                .description("대기열에서 입장으로 승격된 인원")
+                .register(meterRegistry);
+        this.staleRemovedCounter = Counter.builder("ticketing.queue.stale.removed")
+                .description("생존 신호가 끊겨 대기열에서 정리된 인원")
+                .register(meterRegistry);
+    }
 
     @Override
     public void configureTasks(ScheduledTaskRegistrar registrar) {
@@ -54,7 +69,10 @@ public class QueueScheduler implements SchedulingConfigurer {
                 now,
                 now + properties.activeSessionTtl().toMillis(),
                 now - properties.waitHeartbeatTimeout().toMillis(),
-                now - QueueService.ADMISSION_RATE_WINDOW.toMillis());
+                now - QueueService.ADMISSION_RATE_WINDOW.toMillis()
+        );
+        promotedCounter.increment(result.promoted());
+        staleRemovedCounter.increment(result.staleRemoved());
         if (result.promoted() > 0 || result.staleRemoved() > 0) {
             log.debug("대기열 승격: scheduleId={}, promoted={}, staleRemoved={}",
                     scheduleId, result.promoted(), result.staleRemoved());
