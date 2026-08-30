@@ -6,15 +6,12 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.stereotype.Component;
 import ticketing.domain.concert.dto.SeatStatusSnapshotRes;
+import ticketing.global.web.PreSerializedBody;
 import ticketing.infra.redis.seatstatus.SeatStatusRedisRepository;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.zip.GZIPOutputStream;
 
 /**
  * 좌석 상태 스냅샷을 version 단위로 한 번만 직렬화해 보관
@@ -22,8 +19,11 @@ import java.util.zip.GZIPOutputStream;
  */
 @Component
 public class SeatSnapshotCache {
-
-    public record Snapshot(long version, byte[] json, byte[] gzipped) {
+    public record Snapshot(
+            long version,
+            byte[] json,
+            byte[] gzipped
+    ) implements PreSerializedBody {
         /** 같은 version이면 내용이 같고 gzip 여부만 다름 → 약한 ETag */
         public String eTag() {
             return "W/\"" + version + "\"";
@@ -96,19 +96,9 @@ public class SeatSnapshotCache {
         SeatStatusSnapshotRes snapshot = liveService.snapshot(scheduleId);
         try {
             byte[] json = objectMapper.writeValueAsBytes(snapshot);
-            return new Snapshot(snapshot.currentVersion(), json, gzip(json));
+            return new Snapshot(snapshot.currentVersion(), json, PreSerializedBody.gzip(json));
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("스냅샷 직렬화 실패: scheduleId=" + scheduleId, e);
         }
-    }
-
-    private static byte[] gzip(byte[] raw) {
-        ByteArrayOutputStream out = new ByteArrayOutputStream(raw.length / 8);
-        try (GZIPOutputStream gzip = new GZIPOutputStream(out)) {
-            gzip.write(raw);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-        return out.toByteArray();
     }
 }

@@ -2,6 +2,7 @@ package ticketing.domain.concert.controller;
 
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -10,36 +11,43 @@ import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import ticketing.domain.concert.dto.SeatMapRes;
 import ticketing.domain.concert.dto.SeatStatusDeltaRes;
-import ticketing.domain.concert.dto.SeatStatusRes;
 import ticketing.domain.concert.dto.SeatStatusSnapshotRes;
 import ticketing.domain.concert.service.ConcertScheduleQueryService;
 import ticketing.domain.concert.service.SeatSnapshotCache;
-import ticketing.domain.concert.service.SeatStatusCacheService;
 import ticketing.domain.concert.service.SeatStatusLiveService;
 import ticketing.domain.concert.service.SeatStatusStreamService;
+import ticketing.global.web.PreSerializedResponses;
 
-import java.util.List;
+import java.time.Duration;
 
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/v1/schedule")
 public class ConcertScheduleController {
-//
-//    private final ConcertScheduleQueryService queryService;
-//    private final SeatStatusCacheService seatStatusCacheService;
-//
-//    @GetMapping("/{scheduleId}/seat-map")
-//    public ResponseEntity<SeatMapRes> getSeatMap(@PathVariable long scheduleId) {
-//        return ResponseEntity.ok(queryService.getSeatMap(scheduleId));
-//    }
-//
-//    @GetMapping("/{scheduleId}/seat-status")
-//    public ResponseEntity<List<SeatStatusRes>> getSeatStatus(@PathVariable long scheduleId) {
-//        return ResponseEntity.ok(seatStatusCacheService.getSeatStatus(scheduleId));
-//    }
+    /** 판매 중 바뀌지 않음 → 공유 캐시(CDN, 프록시) 허용 */
+    private static final CacheControl SEAT_MAP_CACHE =
+            CacheControl.maxAge(Duration.ofHours(1)).cachePublic();
+    /** 입장한 사용자 전용 → 공유 캐시 금지, 매번 ETag로 재검증 */
+    private static final CacheControl SEAT_STATUS_CACHE = CacheControl.noCache().cachePrivate();
+
+    private final ConcertScheduleQueryService queryService;
     private final SeatStatusLiveService seatStatusLiveService;
     private final SeatStatusStreamService seatStatusStreamService;
     private final SeatSnapshotCache seatSnapshotCache;
+
+    /** 응답 형식: {@link SeatMapRes}, 대기열 검증 없이 공개 */
+    @GetMapping("/{scheduleId}/seat-map")
+    public ResponseEntity<byte[]> seatMap(@PathVariable long scheduleId,
+                                          @RequestHeader(value = HttpHeaders.ACCEPT_ENCODING, required = false)
+                                          String acceptEncoding,
+                                          WebRequest request) {
+        return PreSerializedResponses.of(
+                queryService.getSeatMap(scheduleId),
+                SEAT_MAP_CACHE,
+                acceptEncoding,
+                request
+        );
+    }
 
     // seat-status API는 ActiveUserInterceptor에서 대기열 통과 여부 확인
 
@@ -49,7 +57,12 @@ public class ConcertScheduleController {
                                            @RequestHeader(value = HttpHeaders.ACCEPT_ENCODING, required = false)
                                            String acceptEncoding,
                                            WebRequest request) {
-        return SeatSnapshotResponses.of(seatSnapshotCache.get(scheduleId), acceptEncoding, request);
+        return PreSerializedResponses.of(
+                seatSnapshotCache.get(scheduleId),
+                SEAT_STATUS_CACHE,
+                acceptEncoding,
+                request
+        );
     }
 
     @GetMapping("/{scheduleId}/seat-status/delta")
