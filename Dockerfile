@@ -23,9 +23,13 @@ USER appuser
 
 COPY --from=builder /workspace/build/libs/*.jar app.jar
 
+# JDBC URL의 serverTimezone과 맞춤 (UTC면 DATETIME이 9시간 어긋남)
+ENV TZ=Asia/Seoul
+
 # -XX:+UseContainerSupport  : 컨테이너 메모리 제한 자동 인식
 # -XX:MaxRAMPercentage=75   : 컨테이너 RAM의 75%를 힙으로 사용
 ENTRYPOINT ["java", \
   "-XX:+UseContainerSupport", \
   "-XX:MaxRAMPercentage=75", \
+  "-Duser.timezone=Asia/Seoul", \
   "-jar", "app.jar"]
