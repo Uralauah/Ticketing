@@ -9,9 +9,8 @@
   [Reserve] POST    : 예약 API 응답 시간 (409는 정상 경합으로 성공 처리)
 
 주의:
-  - 전파 지연은 서버 시계와 Locust 시계를 비교하므로 같은 기기(또는 시계가 동기화된 기기)에서 실행한다.
-  - 예약된 좌석은 되돌리지 않는다. 다시 측정하려면 docker compose down -v로 데이터를 초기화한다.
-  - Listener도 입장 슬롯을 하나씩 차지하므로 Listener 수는 max-active-users(기본 1,000)보다 작게 잡는다.
+  - 서버와 같은 기기(또는 시계가 동기화된 기기)에서 실행
+  - 재측정 시 docker compose down -v로 데이터 초기화
 
 실행 (Listener:Booker = 10:1):
   locust -f realtime.py --users 550 --spawn-rate 50 --run-time 3m

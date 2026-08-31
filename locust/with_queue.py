@@ -1,8 +1,8 @@
 """
 대기열 있는 시나리오 (After)
 ────────────────────────────────────────────────────────
-유저가 대기열에 진입 → 입장 대기(서버가 주는 pollAfterMs 간격으로 조회) → 좌석 상태 스냅샷 조회.
-서버에 동시에 입장하는 유저 수가 ticketing.queue.max-active-users(기본 1,000명)로 제한된다.
+유저가 대기열에 진입 → 입장 대기(pollAfterMs 간격으로 조회) → 좌석 상태 스냅샷 조회
+서버에 동시에 입장하는 유저 수는 ticketing.queue.max-active-users(기본 2,000명)로 제한
 
 상태 흐름:
   WAITING ──(active=true)──▶ ACTIVE ──(세션 5분 경과)──▶ 다시 WAITING
