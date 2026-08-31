@@ -305,12 +305,25 @@ class SeatStatusSseBrokerTest {
         assertThatThrownBy(() -> broker.subscribe(SCHEDULE_ID)).isInstanceOf(CustomException.class);
     }
 
-    private SeatStatusSseBroker brokerWith(ObjectMapper objectMapper, Executor executor,
-                                           int maxConnections, int maxPendingEvents) {
+    @Test
+    @DisplayName("연결 유지 시간: 요청 값(입장 세션의 남은 시간), 최대 30분")
+    void 연결_유지_시간_상한() {
+        broker.subscribe(SCHEDULE_ID, 5_000);
+        broker.subscribe(SCHEDULE_ID, Duration.ofHours(3).toMillis());
+        broker.subscribe(SCHEDULE_ID, -10);
+
+        assertThat(createdEmitters).extracting(SseEmitter::getTimeout)
+                .containsExactly(5_000L, Duration.ofMinutes(30).toMillis(), 1L);
+    }
+
+    private SeatStatusSseBroker brokerWith(ObjectMapper objectMapper,
+                                           Executor executor,
+                                           int maxConnections,
+                                           int maxPendingEvents) {
         return new SeatStatusSseBroker(objectMapper, executor, maxConnections, maxPendingEvents) {
             @Override
-            SseEmitter newEmitter() {
-                RecordingEmitter emitter = new RecordingEmitter();
+            SseEmitter newEmitter(long timeoutMs) {
+                RecordingEmitter emitter = new RecordingEmitter(timeoutMs);
                 createdEmitters.add(emitter);
                 return emitter;
             }
@@ -348,6 +361,10 @@ class SeatStatusSseBrokerTest {
         private volatile CountDownLatch gate;
         private volatile boolean blocked;
         private volatile boolean completed;
+
+        RecordingEmitter(long timeoutMs) {
+            super(timeoutMs);
+        }
 
         @Override
         public void send(SseEventBuilder builder) {

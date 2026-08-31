@@ -16,6 +16,7 @@ import ticketing.domain.concert.service.ConcertScheduleQueryService;
 import ticketing.domain.concert.service.SeatSnapshotCache;
 import ticketing.domain.concert.service.SeatStatusLiveService;
 import ticketing.domain.concert.service.SeatStatusStreamService;
+import ticketing.domain.queue.web.ActiveUserInterceptor;
 import ticketing.global.web.PreSerializedResponses;
 
 import java.time.Duration;
@@ -76,9 +77,13 @@ public class ConcertScheduleController {
     public SseEmitter stream(@PathVariable long scheduleId,
                              @RequestParam(required = false) Long since,
                              @RequestHeader(value = "Last-Event-ID", required = false) String lastEventId,
+                             @RequestAttribute(
+                                     name = ActiveUserInterceptor.ACTIVE_EXPIRES_AT_ATTRIBUTE,
+                                     required = false
+                             ) Long sessionExpiresAt,
                              HttpServletResponse response) {
         // 프록시(nginx) 버퍼링 방지
         response.setHeader("X-Accel-Buffering", "no");
-        return seatStatusStreamService.stream(scheduleId, since, lastEventId);
+        return seatStatusStreamService.stream(scheduleId, since, lastEventId, sessionExpiresAt);
     }
 }

@@ -6,20 +6,29 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import ticketing.domain.concert.dto.SeatStatusDeltaRes;
 import ticketing.domain.concert.service.SeatStatusSseBroker.EmitterContext;
 
+import java.time.Clock;
+
 @Service
 @RequiredArgsConstructor
 public class SeatStatusStreamService {
 
     private final SeatStatusLiveService liveService;
     private final SeatStatusSseBroker broker;
+    private final Clock clock;
 
-    public SseEmitter stream(long scheduleId, Long sinceParam, String lastEventIdHeader) {
+    /** sessionExpiresAt(epoch ms)에 연결 종료, null이면 브로커 기본값(30분) */
+    public SseEmitter stream(long scheduleId,
+                             Long sinceParam,
+                             String lastEventIdHeader,
+                             Long sessionExpiresAt) {
         // 없는 일정(404)·초기화 중(503)은 SSE 연결 전에 HTTP 오류로 응답
         liveService.ensureInitialized(scheduleId);
         Long since = resolveSince(sinceParam, lastEventIdHeader);
 
         // 1) 연결 등록, 이후 들어온 이벤트는 버퍼에 쌓임
-        EmitterContext ctx = broker.subscribe(scheduleId);
+        EmitterContext ctx = sessionExpiresAt == null
+                ? broker.subscribe(scheduleId)
+                : broker.subscribe(scheduleId, sessionExpiresAt - clock.millis());
 
         try {
             // 2) 놓친 이벤트 조회, 기준 version이 없으면 스냅샷부터 받도록 함

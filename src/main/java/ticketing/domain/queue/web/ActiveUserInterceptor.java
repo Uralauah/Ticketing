@@ -26,6 +26,8 @@ public class ActiveUserInterceptor implements HandlerInterceptor {
     /** EventSource는 헤더를 못 붙여 SSE에 한해 쿼리 파라미터 허용 */
     public static final String QUEUE_TOKEN_PARAM = "queueToken";
     public static final String USER_ID_PARAM = "userId";
+    /** 세션 만료 시각(epoch ms), SSE 연결 종료 시각으로 사용 */
+    public static final String ACTIVE_EXPIRES_AT_ATTRIBUTE = "ticketing.queue.activeExpiresAt";
 
     private final QueueService queueService;
 
@@ -52,7 +54,12 @@ public class ActiveUserInterceptor implements HandlerInterceptor {
             throw new CustomException(QueueExceptionCode.QUEUE_CREDENTIALS_REQUIRED);
         }
 
-        queueService.validateActiveUser(parseId(scheduleId), parseId(userId), token);
+        long expiresAt = queueService.validateActiveUser(
+                parseId(scheduleId),
+                parseId(userId),
+                token
+        );
+        request.setAttribute(ACTIVE_EXPIRES_AT_ATTRIBUTE, expiresAt);
         return true;
     }
 

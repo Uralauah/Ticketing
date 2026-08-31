@@ -75,7 +75,7 @@ public class QueueRedisRepository {
             if not stored or stored ~= ARGV[1] then return -1 end
             local expiry = redis.call('ZSCORE', KEYS[2], ARGV[2])
             if not expiry or tonumber(expiry) < tonumber(ARGV[3]) then return -2 end
-            return 1
+            return tonumber(expiry)
             """);
 
     private static final DefaultRedisScript<Long> RELEASE_SCRIPT = script(Long.class, """
@@ -231,7 +231,7 @@ public class QueueRedisRepository {
         };
     }
 
-    /** 1: 입장 상태, -1: 토큰 불일치, -2: 입장 상태 아님 */
+    /** 입장 상태면 세션 만료 시각(epoch ms) 반환, -1: 토큰 불일치, -2: 입장 상태 아님 */
     public long validateActive(long scheduleId, long userId, String token, long nowMs) {
         Long result = redis.execute(
                 VALIDATE_ACTIVE_SCRIPT,

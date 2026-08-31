@@ -81,12 +81,22 @@ public class SeatStatusSseBroker implements SmartLifecycle {
 
     /** 등록 시점부터 들어온 이벤트는 버퍼에 쌓았다가 replay 뒤에 전송 */
     public EmitterContext subscribe(long scheduleId) {
+        return subscribe(scheduleId, EMITTER_TIMEOUT_MS);
+    }
+
+    /** 입장 세션 만료 시각에 맞춰 닫을 때 사용 (최대 30분) */
+    public EmitterContext subscribe(long scheduleId, long timeoutMs) {
         if (stopped) {
             throw new CustomException(SeatExceptionCode.SEAT_STATUS_STREAM_UNAVAILABLE);
         }
 
-        SseEmitter emitter = newEmitter();
-        EmitterContext ctx = new EmitterContext(emitter, sendExecutor, maxPendingEvents, closed -> remove(scheduleId, closed));
+        SseEmitter emitter = newEmitter(Math.max(1, Math.min(timeoutMs, EMITTER_TIMEOUT_MS)));
+        EmitterContext ctx = new EmitterContext(
+                emitter,
+                sendExecutor,
+                maxPendingEvents,
+                closed -> remove(scheduleId, closed)
+        );
 
         boolean[] accepted = {false};
         // remove와 같은 키 잠금 안에서 추가 → 제거 중인 빈 집합에 들어가는 것 방지
@@ -177,8 +187,8 @@ public class SeatStatusSseBroker implements SmartLifecycle {
     }
 
     // 테스트에서 emitter 교체용
-    SseEmitter newEmitter() {
-        return new SseEmitter(EMITTER_TIMEOUT_MS);
+    SseEmitter newEmitter(long timeoutMs) {
+        return new SseEmitter(timeoutMs);
     }
 
     // 기본 phase라 웹 서버 graceful shutdown보다 먼저 연결 종료

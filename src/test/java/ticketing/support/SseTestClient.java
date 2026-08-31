@@ -35,6 +35,8 @@ public final class SseTestClient implements AutoCloseable {
     private final java.net.http.HttpHeaders headers;
     private final Stream<String> lines;
     private final BlockingQueue<Event> pending = new LinkedBlockingQueue<>();
+    private final java.util.concurrent.CountDownLatch closed =
+            new java.util.concurrent.CountDownLatch(1);
     private final List<Event> received = new CopyOnWriteArrayList<>();
 
     private SseTestClient(HttpResponse<Stream<String>> response) {
@@ -113,7 +115,25 @@ public final class SseTestClient implements AutoCloseable {
         lines.close();
     }
 
+    /** 서버가 스트림을 끝낼 때까지 대기 */
+    public boolean awaitClosed(Duration timeout) {
+        try {
+            return closed.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
     private void readLoop() {
+        try {
+            readLines();
+        } finally {
+            closed.countDown();
+        }
+    }
+
+    private void readLines() {
         List<String> block = new ArrayList<>();
         try {
             lines.forEach(line -> {

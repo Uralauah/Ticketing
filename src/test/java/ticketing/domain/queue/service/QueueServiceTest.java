@@ -234,15 +234,16 @@ class QueueServiceTest extends RedisTestSupport {
     class ValidateActive {
 
         @Test
-        @DisplayName("계속 호출해도 세션이 연장되지 않고 승격 시점 + 세션 시간에 끝난다")
-        void sessionIsNotExtended() {
+        @DisplayName("반복 호출에도 세션 미연장: 승격 시점 + 세션 시간에 만료, 만료 시각 반환")
+        void 세션_미연장() {
             String token = queueService.enterQueue(SCHEDULE_ID, 100L).token();
             long expiresAt = clock.millis() + SESSION_TTL.toMillis();
             scheduler.promoteWaitingUsers();
 
             for (int minute = 0; minute < 4; minute++) {
                 clock.advance(Duration.ofMinutes(1));
-                queueService.validateActiveUser(SCHEDULE_ID, 100L, token);
+                assertThat(queueService.validateActiveUser(SCHEDULE_ID, 100L, token))
+                        .isEqualTo(expiresAt);
             }
             assertThat(redisTemplate.opsForZSet().score(QueueKeys.active(SCHEDULE_ID), "100"))
                     .isEqualTo((double) expiresAt);

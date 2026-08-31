@@ -103,13 +103,16 @@ public class QueueService {
         };
     }
 
-    /**
-     * 입장 상태 확인만 하고 만료 시각은 연장하지 않음
-     */
-    public void validateActiveUser(long scheduleId, long userId, String token) {
+    /** 세션 만료 시각(epoch ms) 반환, 만료 시각 연장 없음 */
+    public long validateActiveUser(long scheduleId, long userId, String token) {
         long result = queueRepository.validateActive(scheduleId, userId, token, clock.millis());
-        if (result == -1) throw new CustomException(QueueExceptionCode.INVALID_TOKEN);
-        if (result == -2) throw new CustomException(QueueExceptionCode.NOT_ACTIVE_USER);
+        if (result == -1) {
+            throw new CustomException(QueueExceptionCode.INVALID_TOKEN);
+        }
+        if (result == -2) {
+            throw new CustomException(QueueExceptionCode.NOT_ACTIVE_USER);
+        }
+        return result;
     }
 
     public void leave(long scheduleId, long userId, String token) {
