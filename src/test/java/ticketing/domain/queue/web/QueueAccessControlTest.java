@@ -62,7 +62,21 @@ class QueueAccessControlTest extends IntegrationTestSupport {
                         .build()
         );
         scheduleId = schedule.getId();
-        seatId = seatRepository.save(Seat.builder().concertSchedule(schedule).seatNum("A-1").price(10_000).build()).getId();
+        seatId = seatRepository.save(
+                Seat.builder()
+                        .concertSchedule(schedule)
+                        .seatNum("A-1")
+                        .price(10_000)
+                        .build()
+        ).getId();
+        // 한 석뿐이면 예약 직후 매진으로 승격이 멈춤 → 슬롯 반납만 보기 위해 한 석 추가
+        seatRepository.save(
+                Seat.builder()
+                        .concertSchedule(schedule)
+                        .seatNum("A-2")
+                        .price(10_000)
+                        .build()
+        );
 
         activeUserId = userRepository.save(new User("active", 1_000_000)).getId();
         activeToken = QueueTestHelper.activate(

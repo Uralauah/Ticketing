@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import ticketing.domain.concert.service.ScheduleValidator;
+import ticketing.domain.concert.service.SeatInventory;
 import ticketing.domain.queue.dto.QueueEntryResponse;
 import ticketing.domain.queue.dto.QueueStatusResponse;
 import ticketing.domain.queue.exception.QueueExceptionCode;
@@ -28,14 +29,16 @@ public class QueueService {
     private final QueueRedisRepository queueRepository;
     private final QueueProperties properties;
     private final ScheduleValidator scheduleValidator;
+    private final SeatInventory seatInventory;
     private final Clock clock;
 
-    /**
-     * 대기 중이거나 입장한 상태면 거절, 세션이 끝난 사용자는 재진입 가능
-     */
+    /** 대기 중이거나 입장한 상태면 거절, 세션이 끝난 사용자는 재진입 가능 */
     public QueueEntryResponse enterQueue(long scheduleId, long userId) {
         // 없는 일정 ID로 대기열 키가 쌓이는 것 방지
         scheduleValidator.validateExists(scheduleId);
+        if (seatInventory.isSoldOut(scheduleId)) {
+            throw new CustomException(QueueExceptionCode.SOLD_OUT);
+        }
 
         long now = clock.millis();
         String token = UUID.randomUUID().toString();
@@ -75,14 +78,28 @@ public class QueueService {
         );
 
         return switch (result.outcome()) {
-            case ACTIVE -> QueueStatusResponse.active(result.activeExpiresAt());
+            case ACTIVE -> QueueStatusResponse.active(
+                    result.activeExpiresAt(),
+                    seatInventory.isSoldOut(scheduleId)
+            );
             case WAITING -> {
                 long position = result.rank() + 1;
-                yield QueueStatusResponse.waiting(position,
-                        estimateWaitSeconds(position, result.admissions(), now), pollAfterMs(position));
+                if (seatInventory.isSoldOut(scheduleId)) {
+                    yield QueueStatusResponse.soldOut(position);
+                }
+                yield QueueStatusResponse.waiting(
+                        position,
+                        estimateWaitSeconds(position, result.admissions(), now),
+                        pollAfterMs(position)
+                );
             }
             case INVALID_TOKEN -> throw new CustomException(QueueExceptionCode.INVALID_TOKEN);
-            case NOT_IN_QUEUE -> throw new CustomException(QueueExceptionCode.SESSION_EXPIRED);
+            case NOT_IN_QUEUE -> {
+                if (seatInventory.isSoldOut(scheduleId)) {
+                    yield QueueStatusResponse.soldOut(0);
+                }
+                throw new CustomException(QueueExceptionCode.SESSION_EXPIRED);
+            }
         };
     }
 

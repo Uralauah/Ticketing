@@ -91,6 +91,54 @@ class SeatStatusInitializerTest extends RedisTestSupport {
                 .containsEntry("78", SeatStatus.AVAILABLE.name());
         assertThat(redisRepo.currentVersion(SCHEDULE_ID)).isEqualTo(1L);
         assertThat(redisRepo.isInitDone(SCHEDULE_ID)).isTrue();
+        // 남은 좌석 수도 적재 중 들어온 예약까지 반영
+        assertThat(redisRepo.remainingSeats(SCHEDULE_ID)).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("남은 좌석 수: 적재 전엔 없음, 적재 후엔 상태가 바뀔 때만 증감")
+    void 남은_좌석_수_상태_변경_반영() {
+        redisRepo.recordChangeAndPublishAtomic(
+                SCHEDULE_ID,
+                1L,
+                SeatStatus.RESERVED,
+                1_000,
+                System.currentTimeMillis()
+        );
+        assertThat(redisRepo.remainingSeats(SCHEDULE_ID)).isNull();
+
+        when(seatRepository.findSeatStatusByScheduleId(SCHEDULE_ID)).thenReturn(List.of(
+                new SeatStatusRes(1L, SeatStatus.AVAILABLE),
+                new SeatStatusRes(2L, SeatStatus.AVAILABLE),
+                new SeatStatusRes(3L, SeatStatus.AVAILABLE)
+        ));
+        initializer.ensureInitialized(SCHEDULE_ID);
+        assertThat(redisRepo.remainingSeats(SCHEDULE_ID)).isEqualTo(2L); // 적재 전에 예약된 1번 제외
+
+        redisRepo.recordChangeAndPublishAtomic(
+                SCHEDULE_ID,
+                2L,
+                SeatStatus.RESERVED,
+                1_000,
+                System.currentTimeMillis()
+        );
+        redisRepo.recordChangeAndPublishAtomic(
+                SCHEDULE_ID,
+                2L,
+                SeatStatus.RESERVED,
+                1_000,
+                System.currentTimeMillis()
+        );
+        assertThat(redisRepo.remainingSeats(SCHEDULE_ID)).isEqualTo(1L); // 같은 좌석을 두 번 기록해도 한 번만 감소
+
+        redisRepo.recordChangeAndPublishAtomic(
+                SCHEDULE_ID,
+                2L,
+                SeatStatus.AVAILABLE,
+                1_000,
+                System.currentTimeMillis()
+        );
+        assertThat(redisRepo.remainingSeats(SCHEDULE_ID)).isEqualTo(2L); // 취소 시 다시 증가
     }
 
     @Test

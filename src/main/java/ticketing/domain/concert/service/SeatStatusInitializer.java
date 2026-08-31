@@ -69,10 +69,9 @@ public class SeatStatusInitializer {
         }
 
         redisRepo.initStatusesIfAbsent(scheduleId, statuses);
-        redisRepo.initVersionIfAbsent(scheduleId);
-        redisRepo.markInitDone(scheduleId);
-        log.info("좌석 상태 초기화 완료: scheduleId={}, seats={}, {}ms",
-                scheduleId, seats.size(), (System.nanoTime() - startedAt) / 1_000_000);
+        long remaining = redisRepo.finishInit(scheduleId);
+        log.info("좌석 상태 초기화 완료: scheduleId={}, seats={}, remaining={}, {}ms",
+                scheduleId, seats.size(), remaining, (System.nanoTime() - startedAt) / 1_000_000);
     }
 
     private boolean awaitInitDone(long scheduleId) {

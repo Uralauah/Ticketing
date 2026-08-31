@@ -3,11 +3,9 @@
 ────────────────────────────────────────────────────────
 좌석(10,500석)보다 많은 사용자가 오픈 직후 몰려 좌석을 사는 흐름 재현
 
-사용자 한 명의 흐름:
-  대기열 진입 → pollAfterMs 간격으로 상태 조회 → 입장
-  → 좌석 배치도·스냅샷 조회 → 1~3초 고민 → 선호 구역(A > B > C > D)의 빈 좌석 예약
-  → 409(다른 사람이 먼저 예약)면 다른 좌석으로 최대 5번 재시도 → 성공하면 종료(입장 슬롯은 서버가 반납)
-  → 끝내 실패하거나 매진이면 대기열에서 나가고 종료
+사용자 흐름:
+  대기열 진입 → 입장 → 좌석 배치도·스냅샷 조회 → 선호 구역의 빈 좌석 예약
+  → 409면 다른 좌석으로 최대 5번 재시도 → 성공·포기·매진 시 종료
 
 측정 지표:
   [Ticket] time to ticket : 처음 진입부터 예약 성공까지
@@ -87,6 +85,12 @@ class TicketBuyer(HttpUser):
     @task
     def journey(self):
         queue = self.queue
+        if queue.sold_out:
+            # 매진이면 바로 이탈
+            record_timing("[Ticket] sold out", (time.time() - (queue.first_entered_at or time.time())) * 1_000)
+            if queue.token:
+                self._leave()
+            raise StopUser()
         if not queue.active:
             # 다음 조회 시각까지 대기 (gevent라 다른 사용자를 막지 않음)
             time.sleep(max(0.0, min(queue.next_poll_at - time.time(), 10.0)))

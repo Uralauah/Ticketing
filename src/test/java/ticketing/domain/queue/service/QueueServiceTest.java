@@ -10,6 +10,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import ticketing.domain.concert.exception.ScheduleExceptionCode;
 import ticketing.domain.concert.service.ScheduleValidator;
+import ticketing.domain.concert.service.SeatInventory;
 import ticketing.domain.queue.dto.QueueEntryResponse;
 import ticketing.domain.queue.dto.QueueStatusResponse;
 import ticketing.domain.queue.exception.QueueExceptionCode;
@@ -51,6 +52,7 @@ class QueueServiceTest extends RedisTestSupport {
     );
 
     @Mock private ScheduleValidator scheduleValidator;
+    @Mock private SeatInventory seatInventory;
 
     // PEXPIREAT 등 Redis의 실제 시간 처리와 맞추기 위해 현재 시각에서 시작
     private final MutableClock clock = new MutableClock(Instant.now());
@@ -60,8 +62,20 @@ class QueueServiceTest extends RedisTestSupport {
     @BeforeEach
     void setUp() {
         QueueRedisRepository repository = new QueueRedisRepository(redisTemplate);
-        queueService = new QueueService(repository, properties, scheduleValidator, clock);
-        scheduler = new QueueScheduler(repository, properties, clock, new SimpleMeterRegistry());
+        queueService = new QueueService(
+                repository,
+                properties,
+                scheduleValidator,
+                seatInventory,
+                clock
+        );
+        scheduler = new QueueScheduler(
+                repository,
+                properties,
+                seatInventory,
+                clock,
+                new SimpleMeterRegistry()
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -399,6 +413,71 @@ class QueueServiceTest extends RedisTestSupport {
 
     // ─────────────────────────────────────────────────────────────────────────
     // 매진
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("매진")
+    class SoldOut {
+
+        @Test
+        @DisplayName("매진된 일정: SOLD_OUT 예외, 대기열 미생성")
+        void 매진_일정_진입_거절() {
+            org.mockito.Mockito.when(seatInventory.isSoldOut(SCHEDULE_ID)).thenReturn(true);
+
+            assertCode(
+                    QueueExceptionCode.SOLD_OUT,
+                    () -> queueService.enterQueue(SCHEDULE_ID, 100L)
+            );
+            assertThat(redisTemplate.hasKey(QueueKeys.waiting(SCHEDULE_ID))).isFalse();
+        }
+
+        @Test
+        @DisplayName("대기 중 매진: 다음 조회에서 바로 매진 응답, 이후 조회 중단")
+        void 대기중_매진_즉시_알림() {
+            queueService.enterQueue(SCHEDULE_ID, 1L);
+            String token = queueService.enterQueue(SCHEDULE_ID, 2L).token();
+            org.mockito.Mockito.when(seatInventory.isSoldOut(SCHEDULE_ID)).thenReturn(true);
+
+            QueueStatusResponse status = queueService.getQueueStatus(SCHEDULE_ID, 2L, token);
+
+            assertThat(status.soldOut()).isTrue();
+            assertThat(status.active()).isFalse();
+            assertThat(status.pollAfterMs()).isZero();
+        }
+
+        @Test
+        @DisplayName("매진 시 승격 중단, 이탈 대기자 정리는 계속")
+        void 매진시_승격_중단_정리_계속() {
+            queueService.enterQueue(SCHEDULE_ID, 1L);  // 생존 신호가 끊길 사용자
+            String waitingToken = queueService.enterQueue(SCHEDULE_ID, 2L).token();
+            org.mockito.Mockito.when(seatInventory.isSoldOut(SCHEDULE_ID)).thenReturn(true);
+            clock.advance(Duration.ofSeconds(50));
+            queueService.getQueueStatus(SCHEDULE_ID, 2L, waitingToken);
+            clock.advance(Duration.ofSeconds(11));
+
+            scheduler.promoteWaitingUsers();
+
+            assertThat(activeCount()).isZero();
+            assertThat(redisTemplate.opsForZSet().range(QueueKeys.waiting(SCHEDULE_ID), 0, -1))
+                    .containsExactly("2");
+        }
+
+        @Test
+        @DisplayName("취소로 좌석이 다시 생기면 다음 주기부터 승격 재개")
+        void 좌석_회복시_승격_재개() {
+            String token = queueService.enterQueue(SCHEDULE_ID, 100L).token();
+            org.mockito.Mockito.when(seatInventory.isSoldOut(SCHEDULE_ID)).thenReturn(true, false);
+
+            scheduler.promoteWaitingUsers();
+            assertThat(queueService.getQueueStatus(SCHEDULE_ID, 100L, token).active()).isFalse();
+            scheduler.promoteWaitingUsers();
+
+            assertThat(queueService.getQueueStatus(SCHEDULE_ID, 100L, token).active()).isTrue();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 대기 시간 예측과 조회 간격
     // ─────────────────────────────────────────────────────────────────────────
 
     @Nested

@@ -21,6 +21,7 @@ public class SeatStatusRedisRepository {
     private static final DefaultRedisScript<Long> RECORD_AND_PUBLISH_SCRIPT;
     private static final DefaultRedisScript<Long> INIT_STATUSES_IF_ABSENT_SCRIPT;
     private static final DefaultRedisScript<Long> RELEASE_LOCK_SCRIPT;
+    private static final DefaultRedisScript<Long> FINISH_INIT_SCRIPT;
 
     static {
         RECORD_AND_PUBLISH_SCRIPT = new DefaultRedisScript<>();
@@ -29,14 +30,25 @@ public class SeatStatusRedisRepository {
             -- KEYS[1] verKey
             -- KEYS[2] hashKey
             -- KEYS[3] chgKey
+            -- KEYS[4] remainingKey
             -- ARGV[1] seatId
             -- ARGV[2] status
             -- ARGV[3] window
             -- ARGV[4] channel
             -- ARGV[5] publishedAt (epoch ms)
 
+            local prev = redis.call('HGET', KEYS[2], ARGV[1])
             local v = redis.call('INCR', KEYS[1])
             redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
+
+            -- 남은 좌석 수는 초기화 후에만 이전 상태 기준으로 증감 (중복 차감 방지)
+            if prev and redis.call('EXISTS', KEYS[4]) == 1 then
+              if prev == 'AVAILABLE' and ARGV[2] ~= 'AVAILABLE' then
+                redis.call('DECR', KEYS[4])
+              elseif prev ~= 'AVAILABLE' and ARGV[2] == 'AVAILABLE' then
+                redis.call('INCR', KEYS[4])
+              end
+            end
 
             -- SeatStatusChangeCodec과 같은 형식
             local member = tostring(v) .. '|' .. ARGV[1] .. '|' .. ARGV[2] .. '|' .. ARGV[5]
@@ -63,6 +75,21 @@ public class SeatStatusRedisRepository {
               added = added + redis.call('HSETNX', KEYS[1], ARGV[i], ARGV[i + 1])
             end
             return added
+        """);
+
+        // version 생성, 해시 기준으로 남은 좌석 수 설정 후 완료 표시
+        FINISH_INIT_SCRIPT = new DefaultRedisScript<>();
+        FINISH_INIT_SCRIPT.setResultType(Long.class);
+        FINISH_INIT_SCRIPT.setScriptText("""
+            -- KEYS[1] verKey, KEYS[2] hashKey, KEYS[3] remainingKey, KEYS[4] initDoneKey
+            redis.call('SETNX', KEYS[1], '0')
+            local remaining = 0
+            for _, status in ipairs(redis.call('HVALS', KEYS[2])) do
+              if status == 'AVAILABLE' then remaining = remaining + 1 end
+            end
+            redis.call('SET', KEYS[3], remaining)
+            redis.call('SET', KEYS[4], '1')
+            return remaining
         """);
 
         // 내가 잡은 락일 때만 삭제
@@ -98,12 +125,24 @@ public class SeatStatusRedisRepository {
         );
     }
 
-    public void markInitDone(long scheduleId) {
-        redis.opsForValue().set(SeatStatusRedisKeys.initDone(scheduleId), "1");
+    /** 적재 마무리 후 남은 좌석 수 반환 */
+    public long finishInit(long scheduleId) {
+        Long remaining = redis.execute(
+                FINISH_INIT_SCRIPT,
+                List.of(
+                        SeatStatusRedisKeys.ver(scheduleId),
+                        SeatStatusRedisKeys.hash(scheduleId),
+                        SeatStatusRedisKeys.remaining(scheduleId),
+                        SeatStatusRedisKeys.initDone(scheduleId)
+                )
+        );
+        return remaining == null ? 0L : remaining;
     }
 
-    public void initVersionIfAbsent(long scheduleId) {
-        redis.opsForValue().setIfAbsent(SeatStatusRedisKeys.ver(scheduleId), "0");
+    /** 남은 좌석 수 반환, 초기화 전이면 null */
+    public Long remainingSeats(long scheduleId) {
+        String value = redis.opsForValue().get(SeatStatusRedisKeys.remaining(scheduleId));
+        return value == null ? null : Long.parseLong(value);
     }
 
     /** 초기화 여부와 version을 MGET 1회로 조회, 초기화 전이면 null */
@@ -163,7 +202,8 @@ public class SeatStatusRedisRepository {
                 List.of(
                         SeatStatusRedisKeys.ver(scheduleId),
                         SeatStatusRedisKeys.hash(scheduleId),
-                        SeatStatusRedisKeys.chg(scheduleId)
+                        SeatStatusRedisKeys.chg(scheduleId),
+                        SeatStatusRedisKeys.remaining(scheduleId)
                 ),
                 String.valueOf(seatId),
                 status.name(),

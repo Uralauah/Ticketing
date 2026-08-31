@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.SchedulingConfigurer;
 import org.springframework.scheduling.config.ScheduledTaskRegistrar;
 import org.springframework.stereotype.Component;
+import ticketing.domain.concert.service.SeatInventory;
 import ticketing.domain.queue.service.QueueService;
 import ticketing.infra.redis.queue.QueueRedisRepository;
 import ticketing.infra.redis.queue.QueueRedisRepository.PromotionResult;
@@ -22,14 +23,19 @@ import java.util.Set;
 public class QueueScheduler implements SchedulingConfigurer {
     private final QueueRedisRepository queueRepository;
     private final QueueProperties properties;
+    private final SeatInventory seatInventory;
     private final Clock clock;
     private final Counter promotedCounter;
     private final Counter staleRemovedCounter;
 
-    public QueueScheduler(QueueRedisRepository queueRepository, QueueProperties properties, Clock clock,
+    public QueueScheduler(QueueRedisRepository queueRepository,
+                          QueueProperties properties,
+                          SeatInventory seatInventory,
+                          Clock clock,
                           MeterRegistry meterRegistry) {
         this.queueRepository = queueRepository;
         this.properties = properties;
+        this.seatInventory = seatInventory;
         this.clock = clock;
         this.promotedCounter = Counter.builder("ticketing.queue.promoted")
                 .description("대기열에서 입장으로 승격된 인원")
@@ -62,9 +68,11 @@ public class QueueScheduler implements SchedulingConfigurer {
     }
 
     private void promote(long scheduleId, long now) {
+        // 매진이면 승격만 중단 (만료 세션·이탈 대기자 정리는 계속)
+        long maxActive = seatInventory.isSoldOut(scheduleId) ? 0 : properties.maxActiveUsers();
         PromotionResult result = queueRepository.promote(
                 scheduleId,
-                properties.maxActiveUsers(),
+                maxActive,
                 properties.promoteBatchSize(),
                 now,
                 now + properties.activeSessionTtl().toMillis(),

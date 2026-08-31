@@ -31,6 +31,7 @@ class QueueSession:
         self.entered_at = None
         self.first_entered_at = None
         self.ever_admitted = False
+        self.sold_out = False
 
     # ── 대기열 진입 ──────────────────────────────────────────────────────────
 
@@ -53,6 +54,9 @@ class QueueSession:
             elif resp.status_code == 409:
                 # 무작위 ID 충돌 → 다른 ID로 재시도
                 self.user_id = random.randint(*USER_ID_RANGE)
+                resp.success()
+            elif resp.status_code == 410 and _error_code(resp) == "QUEUE-410-002":
+                self.sold_out = True  # 매진: 대기열 진입 안 함
                 resp.success()
             else:
                 resp.failure(f"entry failed: {resp.status_code}")
@@ -79,6 +83,7 @@ class QueueSession:
             if resp.status_code == 200:
                 body = resp.json()
                 self.active = body.get("active", False)
+                self.sold_out = body.get("soldOut", False)
                 self.next_poll_at = time.time() + body.get("pollAfterMs", 1_000) / 1_000
                 resp.success()
                 if self.active:
