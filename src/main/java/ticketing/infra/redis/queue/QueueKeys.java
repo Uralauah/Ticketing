@@ -4,6 +4,9 @@ package ticketing.infra.redis.queue;
 public final class QueueKeys {
     private QueueKeys() {}
 
+    /** 주기마다 한 인스턴스만 승격하기 위한 락 */
+    public static final String PROMOTION_LOCK = "lock:queue:promote";
+
     /** 승격 대상 일정 ID 집합 */
     public static final String ACTIVE_SCHEDULES = "queue:active-events";
 

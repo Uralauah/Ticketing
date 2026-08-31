@@ -12,11 +12,13 @@ import ticketing.infra.redis.queue.QueueRedisRepository;
 import ticketing.infra.redis.queue.QueueRedisRepository.PromotionResult;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * 주기마다 빈 입장 슬롯만큼 대기자 승격
- * 인스턴스마다 실행되므로 승격 속도는 인스턴스 수만큼 빨라짐 (최대 입장 인원은 Lua로 보장)
+ * 인스턴스가 여러 대여도 한 주기에는 한 곳만 승격 → 승격 속도 고정
  */
 @Slf4j
 @Component
@@ -27,6 +29,7 @@ public class QueueScheduler implements SchedulingConfigurer {
     private final Clock clock;
     private final Counter promotedCounter;
     private final Counter staleRemovedCounter;
+    private final String instanceId = UUID.randomUUID().toString();
 
     public QueueScheduler(QueueRedisRepository queueRepository,
                           QueueProperties properties,
@@ -47,9 +50,20 @@ public class QueueScheduler implements SchedulingConfigurer {
 
     @Override
     public void configureTasks(ScheduledTaskRegistrar registrar) {
-        registrar.addFixedRateTask(this::promoteWaitingUsers, properties.promoteInterval());
+        registrar.addFixedRateTask(this::promoteOnSchedule, properties.promoteInterval());
     }
 
+    /** 주기의 90% 동안 락 유지(해제 없음) → 같은 주기에 다른 인스턴스의 중복 승격 방지 */
+    public boolean promoteOnSchedule() {
+        Duration hold = properties.promoteInterval().multipliedBy(9).dividedBy(10);
+        if (!queueRepository.tryAcquirePromotionLock(instanceId, hold)) {
+            return false;
+        }
+        promoteWaitingUsers();
+        return true;
+    }
+
+    /** 모든 일정 승격 1회 (락 없이) */
     public void promoteWaitingUsers() {
         Set<String> scheduleIds = queueRepository.activeScheduleIds();
         if (scheduleIds == null || scheduleIds.isEmpty()) {

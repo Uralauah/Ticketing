@@ -5,6 +5,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Repository;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -286,6 +287,13 @@ public class QueueRedisRepository {
                 nowMs + ":" + UUID.randomUUID().toString().substring(0, 8)
         );
         return new PromotionResult(number(result, 0), number(result, 1));
+    }
+
+    /** 이미 다른 인스턴스가 잡았으면 false, 해제 없이 TTL로 만료 */
+    public boolean tryAcquirePromotionLock(String owner, Duration ttl) {
+        return Boolean.TRUE.equals(
+                redis.opsForValue().setIfAbsent(QueueKeys.PROMOTION_LOCK, owner, ttl)
+        );
     }
 
     public Set<String> activeScheduleIds() {

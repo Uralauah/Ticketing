@@ -294,8 +294,28 @@ class QueueServiceTest extends RedisTestSupport {
         }
 
         @Test
-        @DisplayName("세션이 끝난 자리는 다음 대기자에게 돌아간다")
-        void expiredSessionsFreeSlots() {
+        @DisplayName("인스턴스가 여러 대여도 한 주기에 한 곳만 승격")
+        void 한_주기_한_인스턴스만_승격() {
+            QueueScheduler otherInstance = new QueueScheduler(
+                    new QueueRedisRepository(redisTemplate),
+                    properties,
+                    seatInventory,
+                    clock,
+                    new SimpleMeterRegistry()
+            );
+            enterAll(1, 5);
+
+            boolean first = scheduler.promoteOnSchedule();
+            boolean second = otherInstance.promoteOnSchedule();
+
+            assertThat(first).isTrue();
+            assertThat(second).isFalse();
+            assertThat(activeCount()).isEqualTo(2L); // 배치 2명 승격은 한 번만 수행
+        }
+
+        @Test
+        @DisplayName("세션이 끝난 자리는 다음 대기자에게 할당")
+        void 만료_세션_자리_재할당() {
             enterAll(1, 3);
             scheduler.promoteWaitingUsers();
             scheduler.promoteWaitingUsers();
