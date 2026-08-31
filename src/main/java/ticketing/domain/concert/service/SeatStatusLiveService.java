@@ -80,9 +80,21 @@ public class SeatStatusLiveService {
 
     /**
      * DB 커밋 이후 호출되어야 함
-     * 초기화는 HSETNX 적재라 먼저 기록한 상태를 덮어쓰지 않으므로 초기화 대기 없음
+     * 이미 적용된 outboxId면 0, 아니면 새 version 반환
      */
-    public long recordChange(long scheduleId, long seatId, SeatStatus status) {
-        return redisRepo.recordChangeAndPublishAtomic(scheduleId, seatId, status, CHANGE_LOG_WINDOW, clock.millis());
+    public long recordChange(long scheduleId, long seatId, SeatStatus status, long outboxId) {
+        return redisRepo.recordChangeAndPublishAtomic(
+                scheduleId,
+                seatId,
+                status,
+                CHANGE_LOG_WINDOW,
+                clock.millis(),
+                outboxId
+        );
+    }
+
+    /** 좌석 id → 마지막 적용 Outbox id (없으면 0) */
+    public Map<Long, Long> appliedOutboxIds(long scheduleId, List<Long> seatIds) {
+        return redisRepo.appliedOutboxIds(scheduleId, seatIds);
     }
 }

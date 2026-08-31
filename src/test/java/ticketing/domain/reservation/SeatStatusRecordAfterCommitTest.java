@@ -72,7 +72,7 @@ class SeatStatusRecordAfterCommitTest extends IntegrationTestSupport {
     void 커밋_후_기록_실패해도_예약_성공() {
         Long userId = userRepository.save(new User("buyer", 1_000_000)).getId();
         doThrow(new RedisConnectionFailureException("redis down"))
-                .when(seatStatusLiveService).recordChange(anyLong(), anyLong(), any());
+                .when(seatStatusLiveService).recordChange(anyLong(), anyLong(), any(), anyLong());
         double failuresBefore = failures();
 
         ReservationRes reservation = reservationService.reserve(userId, scheduleId, seatId);
@@ -82,16 +82,23 @@ class SeatStatusRecordAfterCommitTest extends IntegrationTestSupport {
         assertThat(seatRepository.findById(seatId).orElseThrow().getStatus())
                 .isEqualTo(SeatStatus.RESERVED);
         assertThat(failures()).isEqualTo(failuresBefore + 1);
+        // 빠진 변경은 Outbox에 남아 릴레이가 재적용 (SeatStatusOutboxRelayTest)
+        assertThat(outboxRows()).isEqualTo(1);
     }
 
     @Test
-    @DisplayName("롤백된 예약은 좌석 상태를 기록·전파하지 않는다")
-    void rolledBackReservationIsNotRecorded() {
+    @DisplayName("롤백된 예약: 좌석 상태 기록·전파 없음, Outbox 행 미생성")
+    void 롤백된_예약_기록_안함() {
         Long poorUserId = userRepository.save(new User("poor", 0)).getId();
 
         assertThatThrownBy(() -> reservationService.reserve(poorUserId, scheduleId, seatId));
 
-        verify(seatStatusLiveService, never()).recordChange(anyLong(), anyLong(), any());
+        verify(seatStatusLiveService, never()).recordChange(anyLong(), anyLong(), any(), anyLong());
+        assertThat(outboxRows()).isZero();
+    }
+
+    private long outboxRows() {
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM seat_status_outbox", Long.class);
     }
 
     private double failures() {

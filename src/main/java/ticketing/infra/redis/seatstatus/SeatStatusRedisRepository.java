@@ -31,11 +31,21 @@ public class SeatStatusRedisRepository {
             -- KEYS[2] hashKey
             -- KEYS[3] chgKey
             -- KEYS[4] remainingKey
+            -- KEYS[5] appliedKey
             -- ARGV[1] seatId
             -- ARGV[2] status
             -- ARGV[3] window
             -- ARGV[4] channel
             -- ARGV[5] publishedAt (epoch ms)
+            -- ARGV[6] outboxId (0이면 중복 확인 없이 기록)
+
+            -- 같은 좌석에 같거나 더 큰 Outbox id가 이미 적용됐으면 무시 (중복·과거 변경)
+            local outboxId = tonumber(ARGV[6])
+            if outboxId > 0 then
+              local applied = tonumber(redis.call('HGET', KEYS[5], ARGV[1]) or '0')
+              if applied >= outboxId then return 0 end
+              redis.call('HSET', KEYS[5], ARGV[1], ARGV[6])
+            end
 
             local prev = redis.call('HGET', KEYS[2], ARGV[1])
             local v = redis.call('INCR', KEYS[1])
@@ -193,8 +203,22 @@ public class SeatStatusRedisRepository {
         );
     }
 
-    public long recordChangeAndPublishAtomic(long scheduleId, long seatId, SeatStatus status, long window,
+    /** Outbox 확인 없이 기록 (실험·테스트용) */
+    public long recordChangeAndPublishAtomic(long scheduleId,
+                                             long seatId,
+                                             SeatStatus status,
+                                             long window,
                                              long publishedAtMs) {
+        return recordChangeAndPublishAtomic(scheduleId, seatId, status, window, publishedAtMs, 0L);
+    }
+
+    /** 이미 적용된 Outbox id면 0, 아니면 새 version 반환 */
+    public long recordChangeAndPublishAtomic(long scheduleId,
+                                             long seatId,
+                                             SeatStatus status,
+                                             long window,
+                                             long publishedAtMs,
+                                             long outboxId) {
         String channel = SeatStatusTopic.channel(scheduleId);
 
         Long v = redis.execute(
@@ -203,15 +227,35 @@ public class SeatStatusRedisRepository {
                         SeatStatusRedisKeys.ver(scheduleId),
                         SeatStatusRedisKeys.hash(scheduleId),
                         SeatStatusRedisKeys.chg(scheduleId),
-                        SeatStatusRedisKeys.remaining(scheduleId)
+                        SeatStatusRedisKeys.remaining(scheduleId),
+                        SeatStatusRedisKeys.applied(scheduleId)
                 ),
                 String.valueOf(seatId),
                 status.name(),
                 String.valueOf(window),
                 channel,
-                String.valueOf(publishedAtMs)
+                String.valueOf(publishedAtMs),
+                String.valueOf(outboxId)
         );
 
         return v == null ? 0L : v;
+    }
+
+    /** 좌석 id → 마지막 적용 Outbox id (없으면 0) */
+    public Map<Long, Long> appliedOutboxIds(long scheduleId, List<Long> seatIds) {
+        if (seatIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Object> fields = seatIds.stream().<Object>map(String::valueOf).toList();
+        List<Object> values = redis.opsForHash().multiGet(
+                SeatStatusRedisKeys.applied(scheduleId),
+                fields
+        );
+        Map<Long, Long> applied = new HashMap<>(seatIds.size() * 2);
+        for (int i = 0; i < seatIds.size(); i++) {
+            Object value = values == null ? null : values.get(i);
+            applied.put(seatIds.get(i), value == null ? 0L : Long.parseLong(value.toString()));
+        }
+        return applied;
     }
 }

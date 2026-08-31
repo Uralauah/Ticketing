@@ -2,16 +2,16 @@ package ticketing.domain.reservation.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ticketing.domain.concert.entity.Seat;
+import ticketing.domain.concert.entity.SeatStatus;
 import ticketing.domain.concert.exception.SeatExceptionCode;
 import ticketing.domain.concert.service.SeatService;
+import ticketing.domain.concert.service.SeatStatusPropagator;
 import ticketing.domain.reservation.dto.ReservationRes;
 import ticketing.domain.reservation.entity.Reservation;
-import ticketing.domain.reservation.event.SeatReservedEvent;
 import ticketing.domain.reservation.repository.ReservationRepository;
 import ticketing.domain.user.entity.User;
 import ticketing.domain.user.service.UserService;
@@ -24,7 +24,7 @@ public class ReservationService {
     private final UserService userService;
     private final SeatService seatService;
     private final ReservationRepository reservationRepository;
-    private final ApplicationEventPublisher eventPublisher;
+    private final SeatStatusPropagator seatStatusPropagator;
 
     @Transactional
     public ReservationRes reserve(Long userId, Long scheduleId, Long seatId){
@@ -44,8 +44,8 @@ public class ReservationService {
             throw new CustomException(SeatExceptionCode.SEAT_NOT_AVAILABLE);
         }
 
-        // 커밋 후에만 좌석 상태 기록·전파 (SeatReservedEventListener)
-        eventPublisher.publishEvent(new SeatReservedEvent(scheduleId, seatId));
+        // 같은 트랜잭션에 Outbox 기록, Redis 반영은 커밋 후
+        seatStatusPropagator.append(scheduleId, seatId, SeatStatus.RESERVED);
         return ReservationRes.from(reservation);
     }
 }

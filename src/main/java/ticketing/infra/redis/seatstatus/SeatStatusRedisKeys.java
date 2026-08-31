@@ -11,4 +11,6 @@ public final class SeatStatusRedisKeys {
     public static String chg(long scheduleId) { return "seatStatus:chg:" + scheduleId; }
     /** 남은(AVAILABLE) 좌석 수, 초기화 완료 후에만 존재 */
     public static String remaining(long scheduleId) { return "seatStatus:remaining:" + scheduleId; }
+    /** 좌석별 마지막 적용 Outbox id */
+    public static String applied(long scheduleId) { return "seatStatus:applied:" + scheduleId; }
 }
