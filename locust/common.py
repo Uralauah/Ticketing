@@ -1,13 +1,17 @@
 """
 Locust 시나리오 공통: 대기열 진입 → 입장 대기 → 입장 토큰 보관
 
-- 서버가 주는 pollAfterMs(순번이 멀수록 길다)를 지켜 상태를 조회한다.
-- 입장 세션은 승격 시점 기준 절대 만료(기본 5분)라서, 세션이 끝나면 다시 줄을 선다.
-- 사용자 ID 범위는 시드 데이터(src/main/resources/db/seed/load-test-data.sql)와 같다.
+- 서버가 주는 pollAfterMs 간격으로 상태 조회, 세션이 끝나면 재진입
+- 사용자 ID 범위는 시드 데이터(db/seed/load-test-data.sql)와 동일
+- 입장 대기 시간 기록
+  [Queue] wait until active : 진입부터 입장까지
+  [Queue] first admission   : 사용자별 첫 입장까지
 """
 
 import random
 import time
+
+from locust import events
 
 SCHEDULE_ID = 1
 USER_ID_RANGE = (1, 100_000)
@@ -24,6 +28,9 @@ class QueueSession:
         self.token = None
         self.active = False
         self.next_poll_at = 0.0
+        self.entered_at = None
+        self.first_entered_at = None
+        self.ever_admitted = False
 
     # ── 대기열 진입 ──────────────────────────────────────────────────────────
 
@@ -38,6 +45,9 @@ class QueueSession:
                 body = resp.json()
                 self.token = body["token"]
                 self.active = False
+                self.entered_at = time.time()
+                if self.first_entered_at is None:
+                    self.first_entered_at = self.entered_at
                 self.next_poll_at = time.time() + body.get("pollAfterMs", 1_000) / 1_000
                 resp.success()
             elif resp.status_code == 409:
@@ -71,6 +81,8 @@ class QueueSession:
                 self.active = body.get("active", False)
                 self.next_poll_at = time.time() + body.get("pollAfterMs", 1_000) / 1_000
                 resp.success()
+                if self.active:
+                    self._record_admission()
             elif resp.status_code in (401, 410):
                 # 세션 만료 또는 대기열에서 정리됨 → 재진입
                 self.reset()
@@ -78,6 +90,13 @@ class QueueSession:
             else:
                 resp.failure(f"HTTP {resp.status_code}")
         return self.active
+
+    def _record_admission(self):
+        now = time.time()
+        record_timing("[Queue] wait until active", (now - self.entered_at) * 1_000)
+        if not self.ever_admitted:
+            self.ever_admitted = True
+            record_timing("[Queue] first admission", (now - self.first_entered_at) * 1_000)
 
     def reset(self):
         self.token = None
@@ -93,6 +112,11 @@ class QueueSession:
             self.reset()
             return True
         return False
+
+
+def record_timing(name, elapsed_ms):
+    events.request.fire(request_type="QUEUE", name=name, response_time=elapsed_ms,
+                        response_length=0, exception=None, context={})
 
 
 def _error_code(resp):
